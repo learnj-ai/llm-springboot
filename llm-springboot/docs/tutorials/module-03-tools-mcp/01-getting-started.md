@@ -335,7 +335,7 @@ Connection refused: localhost:5432
 
 **Solution**:
 - Verify PostgreSQL is running: `docker ps` or `pg_isready`
-- Check connection settings in `application.properties`
+- Check connection settings in `application.yml`
 - Ensure port 5432 is not blocked by firewall
 
 ### OpenAI API errors
@@ -364,7 +364,7 @@ Error: Invalid Authentication
 **Problem**: Port 8083 is already in use
 
 **Solution**:
-- Change port in `application.properties`: `server.port=8084`
+- Change port in `application.yml` (`server.port: 8084`)
 - Or kill the process using port 8083: `lsof -ti:8083 | xargs kill -9`
 
 ## Practice Exercises

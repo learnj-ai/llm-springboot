@@ -43,11 +43,18 @@
             Real MCP client. Pairs with chapter 09-real-mcp.md, which connects
             to a stdio-based MCP server (the official npx filesystem server is
             the canonical demo).
+
+            Version must track ${langchain4j.version}: the MCP artifact is
+            published as `<lc4j-core-version>-betaNN`, and an older line
+            (e.g. 1.5.x) transitively pulls in langchain4j-core 1.5.x, which
+            Maven then has to reconcile against the 1.11.0 core declared in
+            the parent pom — the "nearest wins" resolution masks the
+            mismatch but it's an accident, not a guarantee.
         -->
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j-mcp</artifactId>
-            <version>1.5.0-beta11</version>
+            <version>1.11.0-beta19</version>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

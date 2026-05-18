@@ -1,5 +1,14 @@
 # Module 06 Troubleshooting Guide
 
+> ⚠️ **Partially superseded.** Sections of this guide describe Spring AI 1.0.0-M5
+> wiring (e.g. "Spring AI and LangChain4J conflict") that no longer applies —
+> Module 06 was migrated off Spring AI when Spring Boot 4 dropped the autoconfig
+> classes that Spring AI 1.0.0-M5 statically depended on. Dokimos's `JudgeLM` is
+> now adapted directly from LangChain4J's `ChatModel` in
+> `DokimosEvaluationConfig`. Troubleshooting entries that mention `spring-ai`,
+> `dokimos-spring-ai`, or `OpenAiAutoConfiguration` are kept for historical
+> context but do not apply to the current build.
+
 ## Evaluation Framework Issues
 
 ### Issue: Dataset File Not Found

@@ -99,7 +99,7 @@ already wired into `pom.xml`:
 <dependency>
     <groupId>dev.langchain4j</groupId>
     <artifactId>langchain4j-mcp</artifactId>
-    <version>1.5.0-beta11</version>
+    <version>1.11.0-beta19</version>
 </dependency>
 ```
 

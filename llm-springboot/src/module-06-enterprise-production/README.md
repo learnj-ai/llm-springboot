@@ -1,5 +1,19 @@
 # Module 06: Enterprise Best Practices and Production
 
+> ⚠️ **This file is partially superseded.** The authoritative tutorial lives at
+> [`docs/tutorials/module-06-enterprise-production/`](../../docs/tutorials/module-06-enterprise-production/).
+>
+> Specifically, the **Spring AI Configuration**, **Dependencies**, and
+> **Troubleshooting** sections below describe an older wiring that used Spring AI
+> 1.0.0-M5 alongside LangChain4J. That stack does not work on Spring Boot 4 /
+> Spring Framework 7 (autoconfig references classes deleted in Spring Boot 4),
+> so Module 06 was migrated to a single LangChain4J stack. Dokimos's `JudgeLM`
+> is now adapted from `dev.langchain4j.model.chat.ChatModel` directly — see
+> `src/main/java/com/techcorp/assistant/module06/dokimos/DokimosEvaluationConfig.java`.
+> Sections that pre-date that change are **kept for the audit trail** but
+> shouldn't be followed verbatim. The published tutorial in `docs/tutorials/` is
+> up to date.
+
 Production-ready patterns for LLM applications including evaluation, observability, and deployment.
 
 ## Overview

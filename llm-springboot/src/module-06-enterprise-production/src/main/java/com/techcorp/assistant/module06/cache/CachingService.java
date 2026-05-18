@@ -50,10 +50,12 @@ public class CachingService {
     @Value("${semantic-cache.ttl-seconds:3600}")
     private long ttlSeconds;
 
-    public CachingService(RedisTemplate<String, String> redisTemplate, EmbeddingModel embeddingModel) {
-        this(redisTemplate, embeddingModel, DEFAULT_EMBEDDING_CACHE_MAX_ENTRIES);
-    }
-
+    /**
+     * Single constructor so Spring's component scan can autowire it without ambiguity.
+     * `maxEntries` is @Value-injected with a default; tests that need to pin a specific
+     * value should override the property via {@code @TestPropertySource} rather than
+     * adding a separate constructor.
+     */
     public CachingService(RedisTemplate<String, String> redisTemplate,
                           EmbeddingModel embeddingModel,
                           @Value("${semantic-cache.embedding-cache-max-entries:1000}") int maxEntries) {

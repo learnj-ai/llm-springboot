@@ -81,17 +81,15 @@ This module uses **Maven** with comprehensive dependencies:
 
 ### Key Dependencies
 
-**Dokimos Evaluation Framework**:
-- `dokimos-core` - Core evaluation abstractions
-- `dokimos-spring-ai` - Spring AI evaluators (faithfulness, hallucination, etc.)
+**Dokimos Evaluation Framework** (vendored under `libs/`):
+- `dokimos-core` - Core evaluation abstractions + built-in evaluators (faithfulness, hallucination, contextual-relevance, exact-match)
 - `dokimos-junit` - JUnit integration for CI/CD
 
-**Spring AI**:
-- `spring-ai-openai-spring-boot-starter` - Judge LLM for evaluators
+> The `dokimos-spring-ai` bridge from earlier drafts has been removed. Module 06 now wires Dokimos's `JudgeLM` directly to LangChain4J's `ChatModel` in `DokimosEvaluationConfig` (`dokimosJudgeChatModel::chat`), so the module has a **single** LLM client stack rather than running Spring AI and LangChain4J side-by-side. See chapter 02 for the wiring.
 
-**LangChain4J**:
-- `langchain4j` - Core abstractions
-- `langchain4j-open-ai` - OpenAI integration for RAG
+**LangChain4J 1.11.0** (RAG path **and** Dokimos judge):
+- `langchain4j` - Core abstractions, `ChatModel` interface, message types
+- `langchain4j-open-ai` - OpenAI integration for both the primary chat model and the judge model
 
 **Observability**:
 - `opentelemetry-api` & `opentelemetry-sdk` - Distributed tracing
@@ -131,17 +129,17 @@ The application uses Spring Boot's YAML configuration in `src/main/resources/app
 
 ### Key Configuration Sections
 
-**Spring AI Configuration** (for judge LLM):
+**LangChain4J + Judge-Model Configuration**:
 ```yaml
-spring:
-  ai:
-    openai:
-      api-key: ${OPENAI_API_KEY}
-      chat:
-        options:
-          model: ${OPENAI_MODEL_NAME:gpt-4o-mini}
-          temperature: 0.7
+openai:
+  api:
+    key: ${OPENAI_API_KEY}
+  model:
+    name: ${OPENAI_MODEL_NAME:gpt-4o-mini}
+    embedding: ${OPENAI_EMBEDDING_MODEL:text-embedding-3-small}
 ```
+
+The single `openai.*` block drives both the primary chat model (`LLMConfig.chatModel()` for the RAG path) and the Dokimos judge model (`DokimosEvaluationConfig.dokimosJudgeChatModel()`, which then becomes the `JudgeLM` bean via a method-reference adapter).
 
 **Dokimos Configuration** (for evaluation):
 ```yaml

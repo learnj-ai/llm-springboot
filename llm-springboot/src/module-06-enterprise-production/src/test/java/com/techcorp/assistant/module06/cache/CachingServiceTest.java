@@ -49,7 +49,7 @@ class CachingServiceTest {
         lenient().when(embeddingModel.embed(anyString()))
                 .thenReturn(Response.from(new Embedding(new float[]{1.0f, 0.0f, 0.0f})));
 
-        cachingService = new CachingService(redisTemplate, embeddingModel);
+        cachingService = new CachingService(redisTemplate, embeddingModel, 1000);
         ReflectionTestUtils.setField(cachingService, "similarityThreshold", 0.95);
         ReflectionTestUtils.setField(cachingService, "ttlSeconds", 3600L);
     }

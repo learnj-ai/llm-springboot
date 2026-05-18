@@ -13,13 +13,11 @@ spring:
     redis:
       time-to-live: 3600000  # 1 hour
 
-  ai:
-    openai:
-      api-key: ${OPENAI_API_KEY}
-      chat:
-        options:
-          model: ${OPENAI_MODEL_NAME:gpt-4o-mini}
-          temperature: 0.7
+  # Note: the `spring.ai.openai.*` block from earlier drafts was removed when
+  # Spring AI was dropped from this module (incompatible with Spring Boot 4).
+  # Both the primary chat model and the Dokimos judge are wired from the
+  # plain `openai.*` block below via LangChain4J — see LLMConfig and
+  # DokimosEvaluationConfig.
 
 server:
   port: 8086

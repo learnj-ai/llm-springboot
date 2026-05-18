@@ -1,5 +1,11 @@
 # Module 06: Enterprise Best Practices and Production
 
+> ⚠️ **Partially superseded** — see the canonical tutorial at
+> [`docs/tutorials/module-06-enterprise-production/`](../../../docs/tutorials/module-06-enterprise-production/).
+> Sections referencing `spring-ai-openai-spring-boot-starter` or
+> `dokimos-spring-ai` describe the pre-Spring-Boot-4 wiring; Module 06 now uses
+> a single LangChain4J stack for both the RAG path and the Dokimos judge.
+
 ## Overview
 
 This module demonstrates production-ready patterns for LLM applications:

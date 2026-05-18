@@ -61,9 +61,8 @@ graph TD
 
 - **Java 25** - Latest LTS with modern language features
 - **Spring Boot 4.0.5** - Enterprise application framework
-- **Dokimos 0.14.2** - Evaluation framework for LLM applications
-- **Spring AI 1.0.0-M5** - Judge LLM integration for evaluators
-- **LangChain4J 1.11.0** - RAG service implementation
+- **Dokimos 0.14.2** - Evaluation framework for LLM applications (vendored under `libs/`; the `dokimos-spring-ai` bridge has been replaced with a LangChain4J adapter so no Spring AI dependency is needed)
+- **LangChain4J 1.11.0** - RAG service **and** Dokimos judge model (single LLM client across the module)
 - **OpenTelemetry 1.45.0** - Distributed tracing and observability
 - **Redis** - Multi-tier caching (exact and semantic)
 - **Prometheus** - Metrics collection and alerting

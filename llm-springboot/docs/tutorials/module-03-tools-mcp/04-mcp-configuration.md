@@ -131,9 +131,11 @@ Let's explore each builder parameter:
 .apiKey(openAiApiKey)
 ```
 
-Retrieved from `application.properties`:
-```properties
-openai.api.key=${OPENAI_API_KEY:your-key-here}
+Retrieved from `application.yml`:
+```yaml
+openai:
+  api:
+    key: ${OPENAI_API_KEY:your-key-here}
 ```
 
 **Security best practices**:
@@ -214,7 +216,7 @@ Here's how the ChatModel, `@Tool` components, and the orchestrator connect (no M
 
 ```mermaid
 graph TD
-    A[application.properties] -->|API key| B[MCPServerConfig]
+    A[application.yml] -->|API key| B[MCPServerConfig]
     B -->|creates| C[ChatModel Bean]
     C -->|injected into| D[ToolOrchestrator]
     E[CustomerDataTool @Component] -->|injected into| D
@@ -235,27 +237,39 @@ graph TD
 
 Create different configurations for different environments:
 
-**application.properties** (default):
-```properties
-openai.model.name=gpt-4o-mini
-openai.timeout.seconds=60
-openai.log.requests=true
+**application.yml** (default):
+```yaml
+openai:
+  model:
+    name: gpt-4o-mini
+  timeout:
+    seconds: 60
+  log:
+    requests: true
 ```
 
-**application-dev.properties** (development):
-```properties
-openai.model.name=gpt-4o-mini
-openai.timeout.seconds=120
-openai.log.requests=true
-openai.log.responses=true
+**application-dev.yml** (development):
+```yaml
+openai:
+  model:
+    name: gpt-4o-mini
+  timeout:
+    seconds: 120
+  log:
+    requests: true
+    responses: true
 ```
 
-**application-prod.properties** (production):
-```properties
-openai.model.name=gpt-4o
-openai.timeout.seconds=30
-openai.log.requests=false
-openai.log.responses=false
+**application-prod.yml** (production):
+```yaml
+openai:
+  model:
+    name: gpt-4o
+  timeout:
+    seconds: 30
+  log:
+    requests: false
+    responses: false
 ```
 
 Activate with:

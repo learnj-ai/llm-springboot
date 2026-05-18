@@ -3,7 +3,6 @@ package com.techcorp.assistant.module06.dokimos;
 import dev.dokimos.core.ExperimentResult;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.TestPropertySource;
@@ -16,21 +15,30 @@ import static org.junit.jupiter.api.Assertions.*;
  * Integration test for full Dokimos experiment execution.
  * Tests end-to-end workflow from dataset loading to result aggregation.
  *
- * <p>Gated on {@code OPENAI_API_KEY}: without it, all tests skip cleanly (instead of
- * each test method checking {@code System.getenv("OPENAI_API_KEY") == null} and
- * returning silently as a fake pass). The {@code testBeansLoaded} smoke test runs
- * separately below without the gate so the Spring context still gets exercised in
- * key-less CI.
+ * <p>Runs in keyless CI: every test method uses the {@code response-length} evaluator
+ * (regex-only, no LLM call), and the test class provides {@code openai.api.key=test-key}
+ * as a property fallback so context refresh succeeds even when {@code OPENAI_API_KEY}
+ * is unset. The LLM-judge path is exercised by {@link DokimosEvaluationTest}, which
+ * is gated separately.
+ *
+ * <p>This class-level wiring is what catches Spring context regressions early — e.g.
+ * an autowiring break in any bean Module 06 ships. Prior to ungating, a bean-creation
+ * regression in {@code CachingService} (two unannotated constructors) went undetected
+ * by {@code mvn test} because this class was the only one that exercised full context
+ * refresh, and the gate skipped it in keyless CI.
  */
 @SpringBootTest
 @TestPropertySource(properties = {
         // Classpath-relative; DatasetLoader checks classpath first, filesystem second.
         "evaluation.dataset.path=data/eval-golden-set.json",
+        // Fallback API key so context refresh succeeds when OPENAI_API_KEY is unset.
+        // LangChain4J's OpenAiChatModel.builder() stores the key without validating it,
+        // so a placeholder is safe — and no test method here makes an actual LLM call.
+        "openai.api.key=test-key",
         "dokimos.judge.model=gpt-4o",
         "dokimos.judge.temperature=0.0"
 })
 @DisplayName("Dokimos Integration Tests")
-@EnabledIfEnvironmentVariable(named = "OPENAI_API_KEY", matches = ".+")
 class DokimosIntegrationTest {
 
     @Autowired(required = false)
