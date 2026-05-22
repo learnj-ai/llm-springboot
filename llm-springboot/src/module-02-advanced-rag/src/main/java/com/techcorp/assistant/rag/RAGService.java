@@ -27,13 +27,19 @@ import org.springframework.stereotype.Service;
  *   <li>Generate a grounded answer with explicit citation instructions.</li>
  * </ol>
  *
- * <p><b>Workshop scope note.</b> Each of those stages is deliberately the simplest viable
- * implementation: the retrieval is sequential (chapter 08 covers the parallel
- * {@code StructuredTaskScope} version in {@link RAGController}), the prompt is a single
- * user message (Module 05 covers proper role separation, indirect prompt-injection defence,
- * and the security implications of treating retrieved chunks as untrusted data), and the
- * context limit is a segment count, not a token budget (Module 06 introduces a token-aware
- * {@code TokenOptimizer} for production use). The behaviour below is the teaching baseline.
+ * <p><b>Concurrency.</b> Step 1 (multi-query + HyDE) and Step 2 (retrieval fan-out) both
+ * use Java 25's {@link StructuredTaskScope} (JEP 505 preview). Step 1 forks the two
+ * independent transformer LLM calls and waits for both; Step 2 fans out one search per
+ * query variant plus the HyDE vector search. Chapter 08 ({@code 08-structured-concurrency.md})
+ * explains the pattern in depth and {@link RAGController#compareSearchMethods(RAGController.CompareRequest)}
+ * uses the same shape for the three-way search-method comparison endpoint.
+ *
+ * <p><b>Workshop scope note.</b> Other stages are deliberately the simplest viable
+ * implementation: the prompt is a single user message (Module 05 covers proper role
+ * separation, indirect prompt-injection defence, and the security implications of
+ * treating retrieved chunks as untrusted data), and the context limit is a segment
+ * count, not a token budget (Module 06 introduces a token-aware {@code TokenOptimizer}
+ * for production use). The behaviour below is the teaching baseline.
  *
  * <p><b>Observability note.</b> The pipeline logs raw question text, generated alternatives,
  * chunk previews, and answer previews. That's useful when debugging the workshop, but for
@@ -185,7 +191,7 @@ public class RAGService {
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.warn("Retrieval interrupted; proceeding with whatever hits arrived first", e);
+            log.warn("╠══ Retrieval interrupted; proceeding with whatever hits arrived first", e);
         }
 
         long retrievalElapsed = System.currentTimeMillis() - retrievalStart;

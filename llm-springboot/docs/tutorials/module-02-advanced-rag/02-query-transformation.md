@@ -652,15 +652,16 @@ graph TD
 - **Total per request**: ~380 extra tokens ≈ $0.00012 at GPT-4o-mini pricing ($0.15/M input + $0.60/M output)
 
 **Latency breakdown:**
-- Multi-query LLM call: ~600ms
-- HyDE LLM call: ~400ms
-- **Total added latency**: ~1 second
+- Multi-query LLM call: ~600ms (varies by model and prompt size)
+- HyDE LLM call: ~400ms (longer output, slightly slower)
+- **Sequential total**: ~1 second of LLM time per request
+- **Parallel total (what this pipeline actually does)**: ~max(600, 400) ≈ 600 ms, see Step 1 in the Worked Example for the `StructuredTaskScope` code
 
-**Optimization strategies:**
-1. **Cache transformations**: Same question → same variants (cache for 1 hour)
-2. **Parallel LLM calls**: Run multi-query and HyDE in parallel
-3. **Selective transformation**: Only transform questions >5 words
-4. **Tier the models**: GPT-4o-mini handles multi-query expansion fine; upgrade to GPT-4o only for HyDE if recall isn't where you want it
+**Optimization strategies (still on the table after parallelisation):**
+1. **Cache transformations**: same question produces the same variants, so caching for ~1 hour avoids the LLM calls entirely on repeated queries.
+2. **Selective transformation**: skip expansion for short, exact-term queries where multi-query and HyDE add noise more often than they help. Easy heuristic: only transform questions longer than five words or containing pronouns.
+3. **Tier the models**: GPT-4o-mini handles multi-query expansion fine. Upgrade to GPT-4o only for HyDE if recall isn't where you want it. The parallel scope means the slower call dominates step latency, so an upgrade to GPT-4o for one of the two calls costs less time than you might expect.
+4. **Cap variants by question complexity**: three alternatives is a good default. For very short queries, drop to one; for ambiguous queries, allow up to five.
 
 ## Practice Exercises
 
