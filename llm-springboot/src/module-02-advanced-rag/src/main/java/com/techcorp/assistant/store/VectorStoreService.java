@@ -77,7 +77,9 @@ public class VectorStoreService {
 
     public List<TextSegment> searchSegments(String query, int maxResults) {
         return search(query, maxResults, SearchMetric.COSINE, ChunkingStrategy.RECURSIVE).stream()
-                .map(match -> TextSegment.from(match.content()))
+                // Preserve metadata (source/chunkingStrategy/chunkIndex) so downstream code
+                // (e.g. RAGService.buildCitedContext) can label sources by document title.
+                .map(match -> TextSegment.from(match.content(), match.metadata()))
                 .toList();
     }
 

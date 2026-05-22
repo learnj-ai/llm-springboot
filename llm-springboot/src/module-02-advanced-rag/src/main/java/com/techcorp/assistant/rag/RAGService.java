@@ -365,8 +365,18 @@ public class RAGService {
         return out;
     }
 
+    /**
+     * Read a metadata entry by key as a string, without caring what type LangChain4J
+     * stored it as. LangChain4J's typed accessors ({@code getString}, {@code getInteger},
+     * etc.) throw on a type mismatch — calling {@code getString("chunkIndex")} blows up
+     * because the loader stored the index as an {@code Integer}. The {@code toMap()}
+     * view lets us pull the raw value and call {@code toString()} regardless of the
+     * stored type, which is what we want here (label rendering only, no type semantics).
+     */
     private String metadataString(TextSegment segment, String key) {
-        return segment.metadata() != null ? segment.metadata().getString(key) : null;
+        if (segment.metadata() == null) return null;
+        Object value = segment.metadata().toMap().get(key);
+        return value != null ? value.toString() : null;
     }
 
     private String formatScore(double score) {
