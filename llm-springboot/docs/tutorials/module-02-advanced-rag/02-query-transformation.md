@@ -393,11 +393,61 @@ The model produced three rewrites:
 
 The model produced a paragraph starting "When troubleshooting VPN issues, it's essential to first identify the root cause...". The model invented content. That's the point: the embedding of a long, plausible-looking answer paragraph sits closer in vector space to the *real* answer paragraph than the original two-word query does. We never show this hypothetical text to the user; we only use its embedding as a retrieval probe.
 
-Why this step is slow: two sequential LLM calls. The 7480 ms is almost entirely network and model latency. If you have to optimise this, options are: (a) drop HyDE (saves one call), (b) run multi-query and HyDE concurrently (`CompletableFuture.supplyAsync` or `StructuredTaskScope` from chapter 08), or (c) cache results for repeated queries.
+Why this step is slow: two LLM calls. The 7480 ms in the original trace was *almost entirely* network and model latency.
 
-### Step 2: Retrieval (142 ms, 25 candidates)
+The current pipeline runs the two calls **concurrently** with a `StructuredTaskScope` rather than back to back:
 
-This is where the fan-out actually pays off. `RAGService` runs five searches in a loop:
+```java
+try (var scope = StructuredTaskScope.open()) {
+    Subtask<List<String>> multiQueryTask = scope.fork(() -> safeMultiQuery(userQuestion));
+    Subtask<String>       hydeTask       = scope.fork(() -> safeHyde(userQuestion));
+    scope.join();
+    alternatives         = sanitizeAlternatives(multiQueryTask.get(), userQuestion);
+    hypotheticalDocument = hydeTask.get();
+}
+```
+
+Both subtasks only depend on `userQuestion`, so there's no ordering constraint. With the parallel form, Step 1 elapsed is `max(multiQueryMs, hydeMs)` instead of `multiQueryMs + hydeMs`. On a re-run, the same `"VPN troubleshooting"` request landed at 1431 ms for Step 1 with the two `safeMultiQuery` / `safeHyde` calls running on `virtual-62` and `virtual-64` concurrently, a saving of several seconds compared to the original sequential layout.
+
+The other ways to speed this step up are orthogonal: (a) drop HyDE entirely (saves one LLM call), or (b) cache transformer results for repeated queries.
+
+### Step 2: Retrieval (parallel fan-out, 25 candidates)
+
+This is where the fan-out actually pays off. `RAGService` runs five searches concurrently in a second `StructuredTaskScope`:
+
+```java
+try (var scope = StructuredTaskScope.open()) {
+    Subtask<List<ScoredSegment>> originalTask =
+            scope.fork(() -> weighted(safeHybridSearch(userQuestion, DEFAULT_TOP_K), WEIGHT_ORIGINAL));
+    List<AltSubtask> altTasks = new ArrayList<>();
+    for (String alt : alternatives) {
+        altTasks.add(new AltSubtask(alt,
+                scope.fork(() -> weighted(safeHybridSearch(alt, DEFAULT_TOP_K), WEIGHT_EXPANDED))));
+    }
+    Subtask<List<ScoredSegment>> hydeTask = null;
+    if (useQueryExpansion && shouldUseHyde(hypotheticalDocument, userQuestion)) {
+        final String hyde = hypotheticalDocument;
+        hydeTask = scope.fork(() -> weighted(safeVectorOnlySearch(hyde, DEFAULT_TOP_K), WEIGHT_HYDE));
+    }
+    scope.join();
+    // ...collect originalTask.get(), each altTasks.get(), and hydeTask.get()...
+}
+```
+
+In the latest trace, Step 2 elapsed dropped from 142 ms (sequential) to 73 ms (parallel) — close to the cost of a single search rather than the sum of five. The pipeline log shows the work landing on `virtual-71/72/73/74`, one virtual thread per fork:
+
+```
+[virtual-73] Vector search returned 10 results, keyword search returned 10 results
+[virtual-71] Vector search returned 10 results, keyword search returned 1 results
+[virtual-72] Vector search returned 10 results, keyword search returned 7 results
+[virtual-74] Vector search returned 10 results, keyword search returned 9 results
+```
+
+Thread-safety is easy to argue for: `VectorStoreService` builds its index in `@PostConstruct` and is read-only afterwards, `KeywordSearchService` computes BM25 from immutable segments, and the `ReRanker` implementations don't keep state between calls. Concurrent reads against any of these are safe.
+
+A small UX note in the code: the per-shard "Hybrid search for X → N results" log lines would otherwise interleave under load and confuse readers of the trace. To keep the workshop log readable, `RAGService` collects each shard's label and result count into a small `RetrievalShard` record while subtasks are running, then prints them in deterministic order after `scope.join()`.
+
+For comparison with the original sequential version, the table below uses the numbers from the *first* trace captured against this corpus:
 
 | #  | Query variant                                  | Search type   | Vector hits | Keyword hits | After RRF | Top-K returned |
 |----|------------------------------------------------|---------------|-------------|--------------|-----------|----------------|
@@ -529,13 +579,17 @@ The answer is a clean rephrasing of one sentence from one chunk. The model didn'
 
 ### Timing breakdown
 
-| Stage                                | Time      | % of total |
-|--------------------------------------|-----------|------------|
-| Query transformation (multi-query + HyDE) | 7480 ms | 78%        |
-| Retrieval (5 searches)               | 142 ms    | 1.5%       |
-| Deduplication + context assembly     | < 1 ms    | negligible |
-| LLM generation                       | 1910 ms   | 20%        |
-| **Total**                            | **9534 ms** | **100%** |
+The two columns below show the cost of the same `"VPN troubleshooting"` request before and after the parallelism described above. The parallel column uses real numbers from a re-run of the trace.
+
+| Stage                                | Sequential | Parallel  |
+|--------------------------------------|------------|-----------|
+| Query transformation (multi-query + HyDE) | 7480 ms | 1431 ms   |
+| Retrieval (5 searches)               | 142 ms     | 73 ms     |
+| Fusion + dedup + context assembly    | < 1 ms     | < 1 ms    |
+| LLM generation                       | 1910 ms    | 405 ms    |
+| **Total**                            | **9534 ms** | **1914 ms** |
+
+(LLM-generation time varies request-to-request; the parallel total reflects a single re-run, not a difference produced by parallelism in that step.)
 
 Two takeaways:
 

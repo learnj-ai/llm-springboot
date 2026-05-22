@@ -6,6 +6,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.StructuredTaskScope;
+import java.util.concurrent.StructuredTaskScope.Subtask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -91,17 +93,36 @@ public class RAGService {
             return RagAnswer.insufficient("Empty question.");
         }
 
-        // Step 1: query transformation.
+        // Step 1: query transformation, multi-query + HyDE run concurrently.
+        //
+        // The two transformer calls are independent (both take only `userQuestion` and
+        // produce independent outputs), so running them sequentially wasted ~min(multiQueryMs,
+        // hydeMs) on every request. StructuredTaskScope.open() forks both, joins both, and
+        // surfaces failures via Subtask.get(). Our `safe*` wrappers never throw, so the
+        // default joiner is fine: a "failed" task here means a swallowed exception inside
+        // the wrapper, not an actual joiner-level failure.
+        //
+        // Step elapsed is dominated by HyDE (the longer of the two calls); end-to-end this
+        // typically saves ~max(0, min(multiQuery, hyde)) — roughly 1-1.5 seconds in practice
+        // when both calls succeed.
         List<String> alternatives = List.of();
         String hypotheticalDocument = null;
 
         if (useQueryExpansion) {
             long transformStart = System.currentTimeMillis();
-            alternatives = sanitizeAlternatives(safeMultiQuery(userQuestion), userQuestion);
-            hypotheticalDocument = safeHyde(userQuestion);
+            try (var scope = StructuredTaskScope.open()) {
+                Subtask<List<String>> multiQueryTask = scope.fork(() -> safeMultiQuery(userQuestion));
+                Subtask<String> hydeTask = scope.fork(() -> safeHyde(userQuestion));
+                scope.join();
+                alternatives = sanitizeAlternatives(multiQueryTask.get(), userQuestion);
+                hypotheticalDocument = hydeTask.get();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("Query transformation interrupted; continuing with original query only", e);
+            }
             long transformElapsed = System.currentTimeMillis() - transformStart;
 
-            log.info("╠══ Step 1: Query Transformation ({}ms) ═════════════════", transformElapsed);
+            log.info("╠══ Step 1: Query Transformation ({}ms, parallel) ═════════════════", transformElapsed);
             log.info("║ Original: {}", userQuestion);
             for (int i = 0; i < alternatives.size(); i++) {
                 log.info("║ Alt[{}]:   {}", i + 1, alternatives.get(i));
@@ -111,27 +132,67 @@ public class RAGService {
             }
         }
 
-        // Step 2: retrieval. Hybrid-search every variant, then add HyDE vector hits.
+        // Step 2: retrieval, all variants searched concurrently.
+        //
+        // 1 hybrid (original) + N hybrid (alternatives) + 0..1 vector-only (HyDE) is a pure
+        // fan-out: each search is independent. Sequential, the per-search ~30ms times five
+        // variants meant ~150ms in this step. Parallel, total ~= the slowest single search.
+        //
+        // Thread-safety: VectorStoreService builds its index in @PostConstruct and is
+        // read-only after init; KeywordSearchService computes BM25 from immutable segments;
+        // ReRanker implementations are stateless. So concurrent search calls are safe.
+        //
+        // Per-variant logging is collected as RetrievalShard records and printed after the
+        // joins in deterministic order — otherwise the log lines would interleave and the
+        // workshop trace would be confusing.
         long retrievalStart = System.currentTimeMillis();
+        List<ScoredSegment> allHits = new ArrayList<>();
+        List<RetrievalShard> shards = new ArrayList<>();
 
-        // Original query first — its hits get the highest fusion weight.
-        List<ScoredSegment> allHits = new ArrayList<>(weighted(safeHybridSearch(userQuestion, DEFAULT_TOP_K), WEIGHT_ORIGINAL));
-        log.info("║ Hybrid search for '{}' → {} results", truncate(userQuestion, 60),
-                allHits.size());
+        try (var scope = StructuredTaskScope.open()) {
+            Subtask<List<ScoredSegment>> originalTask =
+                    scope.fork(() -> weighted(safeHybridSearch(userQuestion, DEFAULT_TOP_K), WEIGHT_ORIGINAL));
 
-        for (String alt : alternatives) {
-            List<ScoredSegment> hits = safeHybridSearch(alt, DEFAULT_TOP_K);
-            log.info("║ Hybrid search for '{}' → {} results", truncate(alt, 60), hits.size());
-            allHits.addAll(weighted(hits, WEIGHT_EXPANDED));
+            List<AltSubtask> altTasks = new ArrayList<>();
+            for (String alt : alternatives) {
+                altTasks.add(new AltSubtask(alt,
+                        scope.fork(() -> weighted(safeHybridSearch(alt, DEFAULT_TOP_K), WEIGHT_EXPANDED))));
+            }
+
+            Subtask<List<ScoredSegment>> hydeTask = null;
+            boolean fireHyde = useQueryExpansion && shouldUseHyde(hypotheticalDocument, userQuestion);
+            if (fireHyde) {
+                final String hyde = hypotheticalDocument;
+                hydeTask = scope.fork(() -> weighted(safeVectorOnlySearch(hyde, DEFAULT_TOP_K), WEIGHT_HYDE));
+            }
+
+            scope.join();
+
+            List<ScoredSegment> originalHits = originalTask.get();
+            shards.add(new RetrievalShard("hybrid: " + userQuestion, originalHits.size()));
+            allHits.addAll(originalHits);
+
+            for (AltSubtask at : altTasks) {
+                List<ScoredSegment> hits = at.task().get();
+                shards.add(new RetrievalShard("hybrid: " + at.query(), hits.size()));
+                allHits.addAll(hits);
+            }
+
+            if (hydeTask != null) {
+                List<ScoredSegment> hydeHits = hydeTask.get();
+                shards.add(new RetrievalShard("vector(HyDE)", hydeHits.size()));
+                allHits.addAll(hydeHits);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("Retrieval interrupted; proceeding with whatever hits arrived first", e);
         }
 
-        if (useQueryExpansion && shouldUseHyde(hypotheticalDocument, userQuestion)) {
-            List<ScoredSegment> hydeHits = safeVectorOnlySearch(hypotheticalDocument, DEFAULT_TOP_K);
-            log.info("║ HyDE vector search → {} results", hydeHits.size());
-            allHits.addAll(weighted(hydeHits, WEIGHT_HYDE));
-        }
         long retrievalElapsed = System.currentTimeMillis() - retrievalStart;
-        log.info("╠══ Step 2: Retrieval ({}ms) — {} total candidates ══════════",
+        for (RetrievalShard shard : shards) {
+            log.info("║ {} → {} results", truncate(shard.label(), 60), shard.size());
+        }
+        log.info("╠══ Step 2: Retrieval ({}ms, parallel) — {} total candidates ══════════",
                 retrievalElapsed, allHits.size());
 
         // Step 3: cross-variant RRF + normalized-text deduplication. This is the change
@@ -388,6 +449,14 @@ public class RAGService {
         String cleaned = text.replaceAll("\\s+", " ").trim();
         return cleaned.length() <= maxLength ? cleaned : cleaned.substring(0, maxLength);
     }
+
+    // ===== Internal records used by the parallel retrieval step. =====
+
+    /** Label and result count for one fan-out shard, captured for deterministic logging. */
+    private record RetrievalShard(String label, int size) {}
+
+    /** Pair of a query variant with its in-flight subtask, so we can log in input order. */
+    private record AltSubtask(String query, Subtask<List<ScoredSegment>> task) {}
 
     // ===== Public return types. =====
 
