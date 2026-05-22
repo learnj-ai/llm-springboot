@@ -36,10 +36,10 @@ public class QueryTransformer {
         try {
             String response = llm.chat(buildMultiQueryPrompt(originalQuery));
             List<String> alternatives = parseAlternativeQueries(response, originalQuery);
-            log.debug("Multi-query generated {} alternatives for: {}", alternatives.size(), originalQuery);
+            log.debug("╠══ Multi-query generated {} alternatives for: {}", alternatives.size(), originalQuery);
             return alternatives;
         } catch (RuntimeException e) {
-            log.warn("Multi-query generation failed for query: {}", originalQuery, e);
+            log.warn("╠══ Multi-query generation failed for query: {}", originalQuery, e);
             return List.of();
         }
     }
@@ -48,13 +48,13 @@ public class QueryTransformer {
         try {
             String hypothetical = llm.chat(buildHydePrompt(query)).trim();
             if (hypothetical.isBlank()) {
-                log.debug("HyDE returned blank output for query: {}", query);
+                log.debug("╠══ HyDE returned blank output for query: {}", query);
                 return query;
             }
-            log.debug("HyDE generated hypothetical document for: {}", query);
+            log.debug("╠══ HyDE generated hypothetical document for: {}", query);
             return hypothetical;
         } catch (RuntimeException e) {
-            log.warn("HyDE generation failed for query: {}", query, e);
+            log.warn("╠══ HyDE generation failed for query: {}", query, e);
             return query;
         }
     }

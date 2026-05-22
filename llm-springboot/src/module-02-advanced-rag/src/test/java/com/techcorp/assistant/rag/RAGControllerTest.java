@@ -31,7 +31,8 @@ class RAGControllerTest {
                                 0.15,
                                 userQuestion)),
                         List.of(userQuestion),
-                        42L);
+                        42L,
+                        RAGService.RagStatus.ANSWERED);
             }
         };
 

@@ -2,11 +2,14 @@ package com.techcorp.assistant.rag;
 
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.chat.ChatModel;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.StructuredTaskScope;
+import java.util.concurrent.StructuredTaskScope.Joiner;
 import java.util.concurrent.StructuredTaskScope.Subtask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,26 +23,44 @@ import org.springframework.stereotype.Service;
  *   <li>Expand the user query into alternative phrasings via multi-query expansion (optional).</li>
  *   <li>Generate a HyDE document and embed it for vector-only retrieval (optional).</li>
  *   <li>Hybrid-search every variant; HyDE additionally runs through vector-only search.</li>
- *   <li>Fuse the per-variant ranked lists into one global ranking using Reciprocal Rank Fusion
- *       with per-source weights (original query &gt; expanded queries &gt; HyDE).</li>
- *   <li>Deduplicate by normalized text, cap at {@link #MAX_CONTEXT_SEGMENTS}, and assemble a
- *       source-labelled context for the LLM.</li>
+ *   <li>Fuse the per-variant ranked lists into one global ranking using <b>true rank-based
+ *       Reciprocal Rank Fusion</b>: each hit contributes {@code weight × 1/(K + rank)} to the
+ *       fused score, where {@code rank} is the chunk's position within its source variant's
+ *       result list. Original-query results have the highest source weight; LLM-generated
+ *       alternatives are weighted lower; HyDE hits lower still.</li>
+ *   <li>Deduplicate by stable key (metadata-derived when available, normalized text
+ *       otherwise), filter by {@link #MIN_FUSED_SCORE}, cap at {@link #MAX_CONTEXT_SEGMENTS},
+ *       and assemble a source-labelled context for the LLM.</li>
  *   <li>Generate a grounded answer with explicit citation instructions.</li>
  * </ol>
  *
+ * <p><b>RRF arithmetic note.</b> Earlier drafts of this class summed pre-computed per-source
+ * RRF scores scaled by a weight; that's score fusion, not RRF. The current implementation
+ * threads the rank position through the per-variant lists and applies the true RRF formula
+ * over those ranks, which is what every reference for hybrid-search rank fusion describes
+ * (Elasticsearch RRF, Azure AI Search hybrid scoring, Cormack/Clarke/Buettcher 2009). The
+ * inner per-source RRF inside {@link HybridSearchService} (vector + keyword merge) is
+ * unchanged and also genuinely rank-based.
+ *
  * <p><b>Concurrency.</b> Step 1 (multi-query + HyDE) and Step 2 (retrieval fan-out) both
- * use Java 25's {@link StructuredTaskScope} (JEP 505 preview). Step 1 forks the two
- * independent transformer LLM calls and waits for both; Step 2 fans out one search per
- * query variant plus the HyDE vector search. Chapter 08 ({@code 08-structured-concurrency.md})
- * explains the pattern in depth and {@link RAGController#compareSearchMethods(RAGController.CompareRequest)}
- * uses the same shape for the three-way search-method comparison endpoint.
+ * use Java 25's {@link StructuredTaskScope} (JEP 505 preview). Each scope is opened with a
+ * timeout via {@link Joiner#awaitAllSuccessfulOrThrow()} so a hung transformer or search
+ * call surfaces as a controlled degraded response instead of a hang. The workshop's parent
+ * pom enables the {@code --enable-preview} flag for compile + test + run; this file will
+ * not compile on plain (non-preview) JDK 25.
+ *
+ * <p>Chapter 08 ({@code 08-structured-concurrency.md}) explains the pattern in depth and
+ * {@link RAGController#compareSearchMethods(RAGController.CompareRequest)} uses the same
+ * shape for the three-way search-method comparison endpoint.
  *
  * <p><b>Workshop scope note.</b> Other stages are deliberately the simplest viable
- * implementation: the prompt is a single user message (Module 05 covers proper role
- * separation, indirect prompt-injection defence, and the security implications of
- * treating retrieved chunks as untrusted data), and the context limit is a segment
- * count, not a token budget (Module 06 introduces a token-aware {@code TokenOptimizer}
- * for production use). The behaviour below is the teaching baseline.
+ * implementation. Module 05's {@code 04-output-validator.md} covers post-generation
+ * verification (hallucination, citation validity, fail-safe rejection); Module 05's
+ * {@code 02-prompt-injection-guard.md} covers indirect prompt-injection defences beyond
+ * the lightweight "treat retrieved context as untrusted data" instruction used here, and
+ * structured {@code ChatRequest} role separation rather than the single-user-message
+ * pattern. Module 06's {@code TokenOptimizer} is a token-aware context-budget replacement
+ * for the segment-count cap used here.
  *
  * <p><b>Observability note.</b> The pipeline logs raw question text, generated alternatives,
  * chunk previews, and answer previews. That's useful when debugging the workshop, but for
@@ -51,8 +72,20 @@ import org.springframework.stereotype.Service;
 public class RAGService {
 
     private static final Logger log = LoggerFactory.getLogger(RAGService.class);
+
     private static final int DEFAULT_TOP_K = 5;
     private static final int MAX_CONTEXT_SEGMENTS = 10;
+
+    /** RRF "K" constant. Larger values flatten the per-rank contribution curve. */
+    private static final int RRF_K = 60;
+
+    /**
+     * Minimum fused score required for a chunk to make it into the LLM context. Default 0.0
+     * means "no filtering"; tune up when the corpus is large enough that weak top-N hits
+     * become a hallucination risk. RRF scores at K=60 are in roughly {@code [0, ~0.05]}
+     * before weighting, so production values typically sit in {@code 0.005 - 0.02}.
+     */
+    private static final double MIN_FUSED_SCORE = 0.0;
 
     // Per-source weights applied during cross-variant RRF. The user's original phrasing
     // is treated as the strongest signal of intent; LLM-generated alternatives are slightly
@@ -62,6 +95,16 @@ public class RAGService {
     private static final double WEIGHT_ORIGINAL = 1.25;
     private static final double WEIGHT_EXPANDED = 1.0;
     private static final double WEIGHT_HYDE = 0.75;
+
+    // Timeouts on the two structured scopes. The transformation scope budget covers two
+    // LLM calls running concurrently; the retrieval budget covers in-memory vector/keyword
+    // search and a re-rank pass. Both should fail-fast on a stuck network rather than
+    // hanging the whole HTTP request.
+    private static final Duration STEP1_TIMEOUT = Duration.ofSeconds(20);
+    private static final Duration STEP2_TIMEOUT = Duration.ofSeconds(5);
+
+    private static final String RETRIEVER_HYBRID = "hybrid";
+    private static final String RETRIEVER_VECTOR_HYDE = "vector(HyDE)";
 
     private final HybridSearchService searchService;
     private final ChatModel llm;
@@ -73,20 +116,33 @@ public class RAGService {
         this.queryTransformer = queryTransformer;
     }
 
-    /** Backward-compatible API: returns just the answer text. */
+    /**
+     * Legacy answer-only API.
+     *
+     * @deprecated The prompt instructs the model to emit {@code [Source N]} citations inline,
+     *     but this method returns a {@code String} and gives the caller no way to resolve
+     *     those numbers back to source text. Use {@link #queryWithSources(String, boolean)}
+     *     and read {@link RagAnswer#sources()} so the {@code [Source 3]} marker maps to
+     *     {@code sources.get(2)} programmatically. Kept for backward compatibility; will be
+     *     removed in a future workshop revision.
+     */
+    @Deprecated(since = "1.1", forRemoval = false)
     public String query(String userQuestion) {
         return query(userQuestion, true);
     }
 
-    /** Backward-compatible API: returns just the answer text. */
+    /**
+     * Legacy answer-only API. See {@link #query(String)} for why this is deprecated.
+     */
+    @Deprecated(since = "1.1", forRemoval = false)
     public String query(String userQuestion, boolean useQueryExpansion) {
         return queryWithSources(userQuestion, useQueryExpansion).answer();
     }
 
     /**
-     * Full RAG pipeline returning the answer plus the sources, transformed queries, and
-     * a structured trace. Prefer this over {@link #query(String, boolean)} when you need
-     * to audit retrieval quality, surface citations, or render source attribution in a UI.
+     * Full RAG pipeline returning the answer plus the sources, transformed queries, a status,
+     * and total elapsed time. {@link RagAnswer#status()} distinguishes a real answer from
+     * insufficient context, retrieval failure, generation failure, and cancellation.
      */
     public RagAnswer queryWithSources(String userQuestion, boolean useQueryExpansion) {
         long pipelineStart = System.currentTimeMillis();
@@ -95,118 +151,47 @@ public class RAGService {
         log.info("║ Query expansion: {}", useQueryExpansion ? "ON" : "OFF");
 
         if (userQuestion == null || userQuestion.isBlank()) {
-            log.info("╚══ RAG Pipeline End — empty question ═════════");
-            return RagAnswer.insufficient("Empty question.");
+            log.info("╚══ RAG Pipeline End ═════════ (empty question)");
+            return RagAnswer.insufficient("Empty question.", System.currentTimeMillis() - pipelineStart);
         }
 
-        // Step 1: query transformation, multi-query + HyDE run concurrently.
-        //
-        // The two transformer calls are independent (both take only `userQuestion` and
-        // produce independent outputs), so running them sequentially wasted ~min(multiQueryMs,
-        // hydeMs) on every request. StructuredTaskScope.open() forks both, joins both, and
-        // surfaces failures via Subtask.get(). Our `safe*` wrappers never throw, so the
-        // default joiner is fine: a "failed" task here means a swallowed exception inside
-        // the wrapper, not an actual joiner-level failure.
-        //
-        // Step elapsed is dominated by HyDE (the longer of the two calls); end-to-end this
-        // typically saves ~max(0, min(multiQuery, hyde)) — roughly 1-1.5 seconds in practice
-        // when both calls succeed.
-        List<String> alternatives = List.of();
-        String hypotheticalDocument = null;
+        // ===== Step 1: query transformation (multi-query + HyDE concurrent) =====
+        TransformResult t = runStep1(userQuestion, useQueryExpansion);
+        List<String> alternatives = t.alternatives();
+        String hypotheticalDocument = t.hypotheticalDocument();
 
-        if (useQueryExpansion) {
-            long transformStart = System.currentTimeMillis();
-            try (var scope = StructuredTaskScope.open()) {
-                Subtask<List<String>> multiQueryTask = scope.fork(() -> safeMultiQuery(userQuestion));
-                Subtask<String> hydeTask = scope.fork(() -> safeHyde(userQuestion));
-                scope.join();
-                alternatives = sanitizeAlternatives(multiQueryTask.get(), userQuestion);
-                hypotheticalDocument = hydeTask.get();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                log.warn("Query transformation interrupted; continuing with original query only", e);
-            }
-            long transformElapsed = System.currentTimeMillis() - transformStart;
-
-            log.info("╠══ Step 1: Query Transformation ({}ms, parallel) ═════════════════", transformElapsed);
-            log.info("║ Original: {}", userQuestion);
-            for (int i = 0; i < alternatives.size(); i++) {
-                log.info("║ Alt[{}]:   {}", i + 1, alternatives.get(i));
-            }
-            if (shouldUseHyde(hypotheticalDocument, userQuestion)) {
-                log.info("║ HyDE:     {} ...", truncate(hypotheticalDocument, 100));
-            }
+        // ===== Step 2: retrieval (fan-out across variants, concurrent) =====
+        Step2Result r = runStep2(userQuestion, alternatives, hypotheticalDocument, useQueryExpansion);
+        if (r.cancelled()) {
+            long elapsed = System.currentTimeMillis() - pipelineStart;
+            log.info("╚══ RAG Pipeline End ═════════ (retrieval cancelled after {}ms)", elapsed);
+            return new RagAnswer(
+                    "I don't have enough information to answer that question.",
+                    List.of(),
+                    combineTransformedQueries(userQuestion, alternatives, hypotheticalDocument),
+                    elapsed,
+                    RagStatus.CANCELLED);
+        }
+        if (r.variants().isEmpty()) {
+            long elapsed = System.currentTimeMillis() - pipelineStart;
+            log.info("╚══ RAG Pipeline End ═════════ (retrieval failed after {}ms)", elapsed);
+            return new RagAnswer(
+                    "I don't have enough information to answer that question.",
+                    List.of(),
+                    combineTransformedQueries(userQuestion, alternatives, hypotheticalDocument),
+                    elapsed,
+                    RagStatus.RETRIEVAL_FAILED);
         }
 
-        // Step 2: retrieval, all variants searched concurrently.
-        //
-        // 1 hybrid (original) + N hybrid (alternatives) + 0..1 vector-only (HyDE) is a pure
-        // fan-out: each search is independent. Sequential, the per-search ~30ms times five
-        // variants meant ~150ms in this step. Parallel, total ~= the slowest single search.
-        //
-        // Thread-safety: VectorStoreService builds its index in @PostConstruct and is
-        // read-only after init; KeywordSearchService computes BM25 from immutable segments;
-        // ReRanker implementations are stateless. So concurrent search calls are safe.
-        //
-        // Per-variant logging is collected as RetrievalShard records and printed after the
-        // joins in deterministic order — otherwise the log lines would interleave and the
-        // workshop trace would be confusing.
-        long retrievalStart = System.currentTimeMillis();
-        List<ScoredSegment> allHits = new ArrayList<>();
-        List<RetrievalShard> shards = new ArrayList<>();
-
-        try (var scope = StructuredTaskScope.open()) {
-            Subtask<List<ScoredSegment>> originalTask =
-                    scope.fork(() -> weighted(safeHybridSearch(userQuestion, DEFAULT_TOP_K), WEIGHT_ORIGINAL));
-
-            List<AltSubtask> altTasks = new ArrayList<>();
-            for (String alt : alternatives) {
-                altTasks.add(new AltSubtask(alt,
-                        scope.fork(() -> weighted(safeHybridSearch(alt, DEFAULT_TOP_K), WEIGHT_EXPANDED))));
-            }
-
-            Subtask<List<ScoredSegment>> hydeTask = null;
-            boolean fireHyde = useQueryExpansion && shouldUseHyde(hypotheticalDocument, userQuestion);
-            if (fireHyde) {
-                final String hyde = hypotheticalDocument;
-                hydeTask = scope.fork(() -> weighted(safeVectorOnlySearch(hyde, DEFAULT_TOP_K), WEIGHT_HYDE));
-            }
-
-            scope.join();
-
-            List<ScoredSegment> originalHits = originalTask.get();
-            shards.add(new RetrievalShard("hybrid: " + userQuestion, originalHits.size()));
-            allHits.addAll(originalHits);
-
-            for (AltSubtask at : altTasks) {
-                List<ScoredSegment> hits = at.task().get();
-                shards.add(new RetrievalShard("hybrid: " + at.query(), hits.size()));
-                allHits.addAll(hits);
-            }
-
-            if (hydeTask != null) {
-                List<ScoredSegment> hydeHits = hydeTask.get();
-                shards.add(new RetrievalShard("vector(HyDE)", hydeHits.size()));
-                allHits.addAll(hydeHits);
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("╠══ Retrieval interrupted; proceeding with whatever hits arrived first", e);
+        // ===== Step 3: real rank-based RRF + stable-key dedup + relevance filter =====
+        int totalCandidates = r.variants().stream().mapToInt(v -> v.hits().size()).sum();
+        List<ScoredSegment> ranked = fuseWithRrf(r.variants(), MAX_CONTEXT_SEGMENTS);
+        if (MIN_FUSED_SCORE > 0.0) {
+            int before = ranked.size();
+            ranked = ranked.stream().filter(s -> s.score() >= MIN_FUSED_SCORE).toList();
+            log.info("║ Min-score filter ({}): {} → {}", MIN_FUSED_SCORE, before, ranked.size());
         }
-
-        long retrievalElapsed = System.currentTimeMillis() - retrievalStart;
-        for (RetrievalShard shard : shards) {
-            log.info("║ {} → {} results", truncate(shard.label(), 60), shard.size());
-        }
-        log.info("╠══ Step 2: Retrieval ({}ms, parallel) — {} total candidates ══════════",
-                retrievalElapsed, allHits.size());
-
-        // Step 3: cross-variant RRF + normalized-text deduplication. This is the change
-        // from earlier drafts: instead of LinkedHashSet-on-insertion-order, we sum the
-        // (already-weighted) RRF scores per stable key, then take the top N by score.
-        List<ScoredSegment> ranked = fuseAndDeduplicate(allHits, MAX_CONTEXT_SEGMENTS);
-        log.info("╠══ Step 3: Fusion + Dedup — {} → {} unique segments ═════════",
-                allHits.size(), ranked.size());
+        log.info("╠══ Step 3: RRF + Dedup — {} → {} unique segments ═════════", totalCandidates, ranked.size());
         for (int i = 0; i < ranked.size(); i++) {
             ScoredSegment s = ranked.get(i);
             log.info("║ [{}] (score={}) {} ...",
@@ -214,45 +199,176 @@ public class RAGService {
         }
 
         if (ranked.isEmpty()) {
-            log.info("╚══ RAG Pipeline End — no relevant context found ═════════");
-            return RagAnswer.insufficient("No relevant context found.");
+            long elapsed = System.currentTimeMillis() - pipelineStart;
+            log.info("╚══ RAG Pipeline End ═════════ (no relevant context)");
+            return RagAnswer.insufficient("No relevant context found.", elapsed);
         }
 
-        // Step 4: source-labelled context.
+        // ===== Step 4: source-labelled context =====
         String context = buildCitedContext(ranked);
         log.info("╠══ Step 4: Context — {} chars from {} segments ═════════════",
                 context.length(), ranked.size());
 
-        // Step 5: grounded answer with citation instructions.
+        // ===== Step 5: grounded answer with citation instructions =====
         long llmStart = System.currentTimeMillis();
         String prompt = buildPrompt(context, userQuestion);
         String answer;
         try {
             answer = llm.chat(prompt);
         } catch (RuntimeException e) {
-            log.error("LLM generation failed", e);
-            long totalElapsed = System.currentTimeMillis() - pipelineStart;
-            log.info("╚══ RAG Pipeline End — LLM error after {}ms ═════════", totalElapsed);
-            return RagAnswer.insufficient("LLM generation failed: " + e.getMessage());
+            long elapsed = System.currentTimeMillis() - pipelineStart;
+            log.error("LLM generation failed after {}ms", elapsed, e);
+            log.info("╚══ RAG Pipeline End ═════════ (generation failed)");
+            return new RagAnswer(
+                    "I'm unable to answer that question right now.",
+                    toSources(ranked),
+                    combineTransformedQueries(userQuestion, alternatives, hypotheticalDocument),
+                    elapsed,
+                    RagStatus.GENERATION_FAILED);
         }
         long llmElapsed = System.currentTimeMillis() - llmStart;
 
         long totalElapsed = System.currentTimeMillis() - pipelineStart;
         log.info("╠══ Step 5: LLM Generation ({}ms) ══════════════════════════", llmElapsed);
         log.info("║ Answer: {}", truncate(answer, 200));
-        log.info("╚══ RAG Pipeline End — total {}ms ══════════════════════════", totalElapsed);
+        log.info("╚══ RAG Pipeline End ═════════ total {}ms", totalElapsed);
 
-        List<Source> sources = toSources(ranked);
-        List<String> transformed = combineTransformedQueries(userQuestion, alternatives, hypotheticalDocument);
-        return new RagAnswer(answer, sources, transformed, totalElapsed);
+        return new RagAnswer(
+                answer,
+                toSources(ranked),
+                combineTransformedQueries(userQuestion, alternatives, hypotheticalDocument),
+                totalElapsed,
+                RagStatus.ANSWERED);
     }
 
-    // ===== Safe-wrapper helpers around each fallible external call. =====
+    // ===== Step 1: parallel transformation =====
     //
-    // The reviewer's "no error handling" critique was correct: a single failing search or
-    // a transient LLM hiccup would tank the entire request. These wrappers degrade
-    // gracefully: a failed expansion turns into "no expansion", a failed search returns
-    // an empty list, and the rest of the pipeline keeps going.
+    // Two independent LLM calls (multi-query + HyDE) on a single user question. Scope
+    // timeout caps the total transformer cost at STEP1_TIMEOUT; on timeout or interrupt
+    // we degrade to "no expansion" instead of failing the request.
+
+    private TransformResult runStep1(String userQuestion, boolean useQueryExpansion) {
+        if (!useQueryExpansion) {
+            return new TransformResult(List.of(), null);
+        }
+
+        long start = System.currentTimeMillis();
+        List<String> alts = List.of();
+        String hyde = null;
+
+        try (var scope = StructuredTaskScope.open(
+                Joiner.<Object>awaitAllSuccessfulOrThrow(),
+                config -> config.withTimeout(STEP1_TIMEOUT))) {
+
+            Subtask<List<String>> multiQueryTask = scope.fork(() -> safeMultiQuery(userQuestion));
+            Subtask<String> hydeTask = scope.fork(() -> safeHyde(userQuestion));
+            scope.join();
+
+            alts = sanitizeAlternatives(multiQueryTask.get(), userQuestion);
+            hyde = hydeTask.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("Query transformation interrupted; degrading to original-query-only", e);
+        } catch (StructuredTaskScope.TimeoutException e) {
+            log.warn("Query transformation timed out after {} ms; degrading to original-query-only",
+                    STEP1_TIMEOUT.toMillis(), e);
+        } catch (StructuredTaskScope.FailedException e) {
+            // Safe wrappers should prevent subtask failure, but if a future change forks a
+            // non-`safe*` call into this scope, surface the failure as a degraded request.
+            log.warn("Query transformation failed in scope; degrading to original-query-only", e);
+        }
+
+        long elapsed = System.currentTimeMillis() - start;
+        log.info("╠══ Step 1: Query Transformation ({}ms, parallel) ═════════════════", elapsed);
+        log.info("║ Original: {}", userQuestion);
+        for (int i = 0; i < alts.size(); i++) {
+            log.info("║ Alt[{}]:   {}", i + 1, alts.get(i));
+        }
+        if (shouldUseHyde(hyde, userQuestion)) {
+            log.info("║ HyDE:     {} ...", truncate(hyde, 100));
+        }
+        return new TransformResult(alts, hyde);
+    }
+
+    // ===== Step 2: parallel retrieval =====
+    //
+    // Fan out one hybrid search per (original + alternatives) and one vector-only search
+    // for the HyDE document, all under a single StructuredTaskScope with STEP2_TIMEOUT.
+    // Returns Step2Result with one VariantHits per surviving subtask, ranked by within-
+    // variant position (the rank is reconstructed in `fuseWithRrf` from list order).
+    //
+    // Thread-safety: VectorStoreService builds its index in @PostConstruct and is
+    // read-only after init; KeywordSearchService computes BM25 from immutable segments;
+    // ReRanker implementations are stateless. So concurrent search calls are safe.
+    //
+    // On timeout or interrupt the method returns Step2Result.cancelled(), and the
+    // queryWithSources caller maps that into RagStatus.CANCELLED. The previous code
+    // claimed to "proceed with whatever hits arrived first" — in practice, on
+    // InterruptedException the `.get()` calls never ran and `allHits` was empty, so the
+    // claim wasn't accurate. The new behaviour is explicit: cancelled means cancelled.
+
+    private Step2Result runStep2(String userQuestion,
+                                 List<String> alternatives,
+                                 String hypotheticalDocument,
+                                 boolean useQueryExpansion) {
+        long start = System.currentTimeMillis();
+        List<VariantHits> variants = new ArrayList<>();
+        boolean cancelled = false;
+
+        try (var scope = StructuredTaskScope.open(
+                Joiner.<List<ScoredSegment>>awaitAllSuccessfulOrThrow(),
+                config -> config.withTimeout(STEP2_TIMEOUT))) {
+
+            Subtask<List<ScoredSegment>> originalTask =
+                    scope.fork(() -> safeHybridSearch(userQuestion, DEFAULT_TOP_K));
+
+            List<AltSubtask> altTasks = new ArrayList<>();
+            for (String alt : alternatives) {
+                altTasks.add(new AltSubtask(alt,
+                        scope.fork(() -> safeHybridSearch(alt, DEFAULT_TOP_K))));
+            }
+
+            Subtask<List<ScoredSegment>> hydeTask = null;
+            boolean fireHyde = useQueryExpansion && shouldUseHyde(hypotheticalDocument, userQuestion);
+            if (fireHyde) {
+                final String hyde = hypotheticalDocument;
+                hydeTask = scope.fork(() -> safeVectorOnlySearch(hyde, DEFAULT_TOP_K));
+            }
+
+            scope.join();
+
+            variants.add(new VariantHits(userQuestion, RETRIEVER_HYBRID, WEIGHT_ORIGINAL, originalTask.get()));
+            for (AltSubtask at : altTasks) {
+                variants.add(new VariantHits(at.query(), RETRIEVER_HYBRID, WEIGHT_EXPANDED, at.task().get()));
+            }
+            if (hydeTask != null) {
+                variants.add(new VariantHits(hypotheticalDocument, RETRIEVER_VECTOR_HYDE, WEIGHT_HYDE,
+                        hydeTask.get()));
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("Retrieval interrupted; returning cancelled response", e);
+            cancelled = true;
+        } catch (StructuredTaskScope.TimeoutException e) {
+            log.warn("Retrieval timed out after {} ms; returning cancelled response",
+                    STEP2_TIMEOUT.toMillis(), e);
+            cancelled = true;
+        } catch (StructuredTaskScope.FailedException e) {
+            log.error("Retrieval failed in scope; returning empty result set", e);
+        }
+
+        long elapsed = System.currentTimeMillis() - start;
+        for (VariantHits v : variants) {
+            log.info("║ {}: '{}' → {} results",
+                    v.retriever(), truncate(v.sourceQuery(), 60), v.hits().size());
+        }
+        int total = variants.stream().mapToInt(v -> v.hits().size()).sum();
+        log.info("╠══ Step 2: Retrieval ({}ms, parallel) — {} total candidates ══════════", elapsed, total);
+
+        return new Step2Result(variants, cancelled);
+    }
+
+    // ===== Safe-wrapper helpers around each fallible external call =====
 
     private List<String> safeMultiQuery(String userQuestion) {
         try {
@@ -275,7 +391,8 @@ public class RAGService {
 
     private List<ScoredSegment> safeHybridSearch(String query, int topK) {
         try {
-            return searchService.hybridSearchScored(query, topK);
+            List<ScoredSegment> result = searchService.hybridSearchScored(query, topK);
+            return result != null ? result : List.of();
         } catch (RuntimeException e) {
             log.warn("Hybrid search failed for query '{}'; continuing with other variants",
                     truncate(query, 60), e);
@@ -285,19 +402,20 @@ public class RAGService {
 
     private List<ScoredSegment> safeVectorOnlySearch(String query, int topK) {
         try {
-            return searchService.vectorOnlySearchScored(query, topK);
+            List<ScoredSegment> result = searchService.vectorOnlySearchScored(query, topK);
+            return result != null ? result : List.of();
         } catch (RuntimeException e) {
             log.warn("Vector-only search failed; continuing without HyDE results", e);
             return List.of();
         }
     }
 
-    // ===== Defensive coding around LLM-generated alternatives. =====
+    // ===== Defensive coding around LLM-generated alternatives =====
 
     private List<String> sanitizeAlternatives(List<String> alternatives, String originalQuery) {
-        // The QueryTransformer already strips numbering, dedups case-insensitively, and
-        // caps at ALTERNATIVE_QUERY_COUNT, but we belt-and-brace here in case the
-        // contract changes upstream or a stub is plugged in for testing.
+        // QueryTransformer already strips numbering, dedups case-insensitively, and caps at
+        // ALTERNATIVE_QUERY_COUNT, but we belt-and-brace here in case the contract changes
+        // upstream or a stub is plugged in for testing.
         return alternatives.stream()
                 .filter(s -> s != null && !s.isBlank())
                 .map(String::trim)
@@ -307,57 +425,78 @@ public class RAGService {
                 .toList();
     }
 
-    // ===== Fusion + dedup. =====
+    // ===== Step 3: real rank-based RRF =====
+    //
+    // For every chunk encountered across any variant, the fused score is the sum of
+    //     weight × 1 / (RRF_K + rank)
+    // contributions, where rank is the chunk's position (1-indexed) inside its source
+    // variant's result list. This is the textbook RRF formula (Cormack et al., 2009; the
+    // same one Elasticsearch/Azure/Vespa hybrid-search docs describe). It's intentionally
+    // rank-based, not score-based, so it doesn't care that vector cosine scores live on
+    // a different scale from BM25 scores or HyDE scores. The only knobs are RRF_K and the
+    // per-source weights.
 
-    private List<ScoredSegment> weighted(List<ScoredSegment> hits, double weight) {
-        if (weight == 1.0) return hits;
-        List<ScoredSegment> out = new ArrayList<>(hits.size());
-        for (ScoredSegment h : hits) {
-            out.add(new ScoredSegment(h.segment(), h.score() * weight, h.sourceQuery()));
-        }
-        return out;
-    }
-
-    private List<ScoredSegment> fuseAndDeduplicate(List<ScoredSegment> hits, int maxResults) {
-        // Sum the (weighted) scores per normalized-text key. The same chunk produced by
-        // multiple query variants reinforces; we want that reinforcement reflected in the
-        // final rank, not lost.
+    private List<ScoredSegment> fuseWithRrf(List<VariantHits> variants, int maxResults) {
         Map<String, Double> scoreByKey = new LinkedHashMap<>();
         Map<String, ScoredSegment> bestByKey = new LinkedHashMap<>();
+        Map<String, String> sourceByKey = new LinkedHashMap<>();
 
-        for (ScoredSegment hit : hits) {
-            String key = stableKey(hit.segment());
-            scoreByKey.merge(key, hit.score(), Double::sum);
-            // Keep the first ScoredSegment we saw for this key; metadata is the same anyway
-            // since the underlying TextSegment is identical.
-            bestByKey.putIfAbsent(key, hit);
+        for (VariantHits variant : variants) {
+            List<ScoredSegment> hits = variant.hits();
+            for (int i = 0; i < hits.size(); i++) {
+                ScoredSegment hit = hits.get(i);
+                int rank = i + 1;
+                double contribution = variant.weight() * (1.0 / (RRF_K + rank));
+
+                String key = stableKey(hit.segment());
+                scoreByKey.merge(key, contribution, Double::sum);
+                bestByKey.putIfAbsent(key, hit);
+                // Track which variant first surfaced this chunk so the response can show
+                // attribution in Source.sourceQuery — useful for "why did this chunk
+                // win?" diagnostics.
+                sourceByKey.putIfAbsent(key, variant.sourceQuery());
+            }
         }
 
         return scoreByKey.entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
                 .limit(maxResults)
                 .map(e -> {
-                    ScoredSegment original = bestByKey.get(e.getKey());
-                    return new ScoredSegment(original.segment(), e.getValue(), original.sourceQuery());
+                    ScoredSegment seed = bestByKey.get(e.getKey());
+                    return new ScoredSegment(seed.segment(), e.getValue(), sourceByKey.get(e.getKey()));
                 })
                 .toList();
     }
 
     /**
-     * Stable dedup key. Prefers structural identifiers from metadata when present
-     * ({@code document_id + chunk_id}); falls back to normalized text (lowercased and
-     * whitespace-collapsed) so trivial formatting differences don't produce duplicates.
+     * Stable dedup key. Prefers structural identifiers from metadata when present, falling
+     * back to normalized text. Two key flavours are tried before giving up:
+     * <ol>
+     *   <li>{@code document_id:chunk_id} — the canonical pair when the loader has tagged
+     *       segments with abstract identifiers.</li>
+     *   <li>{@code source:chunkIndex} — what the workshop's actual document loader produces
+     *       (filename + integer index). This is the path that fires in practice; the older
+     *       code looked for {@code chunk_id} and never found it, silently falling through
+     *       to the text-only branch.</li>
+     * </ol>
+     * Type-tolerant reads via {@link #metadataString(TextSegment, String)} so that an
+     * Integer-typed metadata value (e.g. {@code chunkIndex}) doesn't blow up the request.
      */
     private String stableKey(TextSegment segment) {
-        String docId = segment.metadata() != null ? segment.metadata().getString("document_id") : null;
-        String chunkId = segment.metadata() != null ? segment.metadata().getString("chunk_id") : null;
+        String docId = metadataString(segment, "document_id");
+        String chunkId = metadataString(segment, "chunk_id");
         if (docId != null && chunkId != null) {
             return docId + ":" + chunkId;
         }
-        return segment.text().toLowerCase().replaceAll("\\s+", " ").trim();
+        String source = metadataString(segment, "source");
+        String chunkIndex = metadataString(segment, "chunkIndex");
+        if (source != null && chunkIndex != null) {
+            return source + ":" + chunkIndex;
+        }
+        return segment.text().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ").trim();
     }
 
-    // ===== Context assembly + prompt. =====
+    // ===== Context assembly + prompt =====
 
     private String buildCitedContext(List<ScoredSegment> ranked) {
         StringBuilder sb = new StringBuilder();
@@ -401,7 +540,7 @@ public class RAGService {
                 """.formatted(context, userQuestion);
     }
 
-    // ===== Small helpers. =====
+    // ===== Small helpers =====
 
     private boolean shouldUseHyde(String hypotheticalDocument, String userQuestion) {
         if (hypotheticalDocument == null || hypotheticalDocument.isBlank()) return false;
@@ -435,10 +574,11 @@ public class RAGService {
     /**
      * Read a metadata entry by key as a string, without caring what type LangChain4J
      * stored it as. LangChain4J's typed accessors ({@code getString}, {@code getInteger},
-     * etc.) throw on a type mismatch — calling {@code getString("chunkIndex")} blows up
-     * because the loader stored the index as an {@code Integer}. The {@code toMap()}
-     * view lets us pull the raw value and call {@code toString()} regardless of the
-     * stored type, which is what we want here (label rendering only, no type semantics).
+     * etc.) throw on a type mismatch, so calling {@code getString("chunkIndex")} blows up
+     * when the loader stored the index as an {@code Integer}. The {@code toMap()} view
+     * lets us pull the raw value and call {@code toString()} regardless of the stored
+     * type, which is what we want here (label rendering and dedup-key construction, no
+     * type semantics).
      */
     private String metadataString(TextSegment segment, String key) {
         if (segment.metadata() == null) return null;
@@ -456,41 +596,69 @@ public class RAGService {
         return cleaned.length() <= maxLength ? cleaned : cleaned.substring(0, maxLength);
     }
 
-    // ===== Internal records used by the parallel retrieval step. =====
+    // ===== Internal records used by Steps 1/2/3 =====
 
-    /** Label and result count for one fan-out shard, captured for deterministic logging. */
-    private record RetrievalShard(String label, int size) {}
+    /** Output of Step 1. */
+    private record TransformResult(List<String> alternatives, String hypotheticalDocument) {}
 
-    /** Pair of a query variant with its in-flight subtask, so we can log in input order. */
+    /** Output of Step 2: the per-variant hits plus a cancelled flag set on timeout/interrupt. */
+    private record Step2Result(List<VariantHits> variants, boolean cancelled) {}
+
+    /** One variant's ranked hits, ready to be folded into RRF. */
+    private record VariantHits(
+            String sourceQuery,
+            String retriever,
+            double weight,
+            List<ScoredSegment> hits) {}
+
+    /** Pair of a query variant with its in-flight subtask, so we can join in input order. */
     private record AltSubtask(String query, Subtask<List<ScoredSegment>> task) {}
 
-    // ===== Public return types. =====
+    // ===== Public return types =====
+
+    /** Pipeline status. Differentiates a real answer from various degraded outcomes. */
+    public enum RagStatus {
+        /** The LLM produced an answer grounded in retrieved context. */
+        ANSWERED,
+        /** No chunk passed retrieval / filtering; the user-facing answer is the fallback. */
+        INSUFFICIENT_CONTEXT,
+        /** Every search call errored (or all returned empty). */
+        RETRIEVAL_FAILED,
+        /** Retrieval succeeded but the LLM call threw. Sources are still populated. */
+        GENERATION_FAILED,
+        /** Step 1 or Step 2 was interrupted or hit a scope timeout. */
+        CANCELLED
+    }
 
     /**
-     * Rich pipeline result: the answer, the ranked sources used to build the context, and
-     * the transformed queries (original + alternatives + HyDE preview). Useful for UIs
-     * that need to show citations, and for evaluation pipelines that need to audit
-     * retrieval.
+     * Rich pipeline result: the answer, the ranked sources used to build the context, the
+     * transformed queries (original + alternatives + HyDE preview), the elapsed wall-clock
+     * time, and the {@link RagStatus} for callers that need to distinguish a real answer
+     * from a degraded one.
      */
     public record RagAnswer(
             String answer,
             List<Source> sources,
             List<String> transformedQueries,
-            long elapsedMs) {
+            long elapsedMs,
+            RagStatus status) {
 
-        static RagAnswer insufficient(String reason) {
+        static RagAnswer insufficient(String reason, long elapsedMs) {
             return new RagAnswer(
                     "I don't have enough information to answer that question.",
                     List.of(),
                     List.of(),
-                    0L);
+                    elapsedMs,
+                    RagStatus.INSUFFICIENT_CONTEXT);
         }
     }
 
     /**
      * One retrieved source attached to a {@link RagAnswer}. The {@code number} matches the
      * {@code [Source N]} label injected into the LLM prompt, so a UI can map each citation
-     * in the answer text back to the source it came from.
+     * in the answer text back to the source it came from. {@code score} is the fused RRF
+     * score (post-weighting); {@code sourceQuery} is the query variant that first surfaced
+     * the chunk during retrieval.
      */
     public record Source(
             int number,

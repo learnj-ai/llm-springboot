@@ -65,14 +65,14 @@ public class HybridSearchService {
         List<TextSegment> vectorResults = vectorStore.searchSegments(query, retrievalSize);
         List<TextSegment> keywordResults = keywordSearch.search(query, retrievalSize);
 
-        log.debug("Vector search returned {} results, keyword search returned {} results",
+        log.debug("╠══ Vector search returned {} results, keyword search returned {} results",
                 vectorResults.size(), keywordResults.size());
 
         // Stage 2: merge via RRF, keeping scores.
         List<ScoredSegment> fused = reciprocalRankFusionScored(
                 vectorResults, keywordResults, retrievalSize, query);
 
-        log.debug("RRF merged to {} results", fused.size());
+        log.debug("╠══ RRF merged to {} results", fused.size());
 
         // Stage 3: re-rank (operates on TextSegments). We preserve the fused score for
         // each segment that survives re-ranking by looking it up in a text->score map.

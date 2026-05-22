@@ -42,7 +42,8 @@ public class RAGController {
                 result.answer(),
                 result.sources(),
                 result.transformedQueries(),
-                result.elapsedMs()));
+                result.elapsedMs(),
+                result.status()));
     }
 
     @PostMapping("/compare")

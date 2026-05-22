@@ -22,6 +22,13 @@ import java.util.List;
  * <p>{@code elapsedMs} is the wall-clock time the pipeline spent. Cheap diagnostic that
  * keeps observability available without enabling debug logging.
  *
+ * <p>{@code status} surfaces the {@link RAGService.RagStatus} so a client can distinguish a
+ * grounded answer from a degraded response without parsing the {@code answer} string:
+ * {@code ANSWERED}, {@code INSUFFICIENT_CONTEXT}, {@code RETRIEVAL_FAILED},
+ * {@code GENERATION_FAILED}, or {@code CANCELLED}. {@code ANSWERED} is the only status
+ * for which {@code sources} is guaranteed populated and the {@code answer} reflects the
+ * model's output.
+ *
  * <p>Older clients reading only {@link #answer()} keep working unchanged because Jackson
  * tolerates extra fields by default.
  */
@@ -29,10 +36,11 @@ public record RAGResponse(
         String answer,
         List<RAGService.Source> sources,
         List<String> transformedQueries,
-        long elapsedMs) {
+        long elapsedMs,
+        RAGService.RagStatus status) {
 
     /** Convenience constructor for the legacy answer-only shape (used by error paths). */
     public RAGResponse(String answer) {
-        this(answer, List.of(), List.of(), 0L);
+        this(answer, List.of(), List.of(), 0L, RAGService.RagStatus.INSUFFICIENT_CONTEXT);
     }
 }

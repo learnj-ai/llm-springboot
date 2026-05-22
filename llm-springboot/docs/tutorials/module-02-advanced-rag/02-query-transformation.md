@@ -471,17 +471,28 @@ HyDE deliberately skips keyword search (`searchService.vectorOnlySearch(...)`, n
 
 ### Step 3: Fusion + Deduplication (25 → 10)
 
-`RAGService.fuseAndDeduplicate(...)`:
+`RAGService.fuseWithRrf(...)`:
 
 ```java
-private List<ScoredSegment> fuseAndDeduplicate(List<ScoredSegment> hits, int maxResults) {
+private static final int RRF_K = 60;
+
+private List<ScoredSegment> fuseWithRrf(List<VariantHits> variants, int maxResults) {
     Map<String, Double> scoreByKey = new LinkedHashMap<>();
     Map<String, ScoredSegment> bestByKey = new LinkedHashMap<>();
+    Map<String, String> sourceByKey = new LinkedHashMap<>();
 
-    for (ScoredSegment hit : hits) {
-        String key = stableKey(hit.segment());
-        scoreByKey.merge(key, hit.score(), Double::sum);
-        bestByKey.putIfAbsent(key, hit);
+    for (VariantHits variant : variants) {
+        List<ScoredSegment> hits = variant.hits();
+        for (int i = 0; i < hits.size(); i++) {
+            ScoredSegment hit = hits.get(i);
+            int rank = i + 1;
+            double contribution = variant.weight() * (1.0 / (RRF_K + rank));
+
+            String key = stableKey(hit.segment());
+            scoreByKey.merge(key, contribution, Double::sum);
+            bestByKey.putIfAbsent(key, hit);
+            sourceByKey.putIfAbsent(key, variant.sourceQuery());
+        }
     }
 
     return scoreByKey.entrySet().stream()
@@ -490,19 +501,22 @@ private List<ScoredSegment> fuseAndDeduplicate(List<ScoredSegment> hits, int max
             .map(e -> new ScoredSegment(
                     bestByKey.get(e.getKey()).segment(),
                     e.getValue(),
-                    bestByKey.get(e.getKey()).sourceQuery()))
+                    sourceByKey.get(e.getKey())))
             .toList();
 }
 ```
 
-This is doing two things at once: **deduplicating** by a stable key (document/chunk id when metadata is present, otherwise normalized text) and **re-fusing** the per-variant RRF scores into a single global score per unique chunk.
+This is the textbook **Reciprocal Rank Fusion** formula (Cormack et al., 2009; the same one Elasticsearch, Azure AI Search, and Vespa describe for hybrid search). For each variant's result list, every hit contributes `weight × 1 / (RRF_K + rank)`, where `rank` is its 1-indexed position inside *that* variant's ranking. Contributions for the same chunk (matched via `stableKey`) are summed across variants. The chunks with the highest summed contributions win the top-N.
 
-Two important properties:
+Why it's rank-based, not score-based: a vector cosine score (typically 0.6 to 0.95), a BM25 score (unbounded, often 5 to 30), and a HyDE-derived cosine all live on different scales. Adding them directly would let whichever variant has the largest raw numbers dominate. RRF throws the raw scores away and uses only the rank position, so all variants vote on equal footing.
+
+Three important properties:
 
 1. **Insertion order does not decide ranking.** A weak result from the original query no longer beats a strong result from an alternative just because it arrived first. The final top-N is whatever has the highest summed RRF score across all variants.
 2. **Reinforcement counts.** A chunk that appears in three of the five variant rankings sums three RRF contributions, so it scores higher than a chunk that appears in only one. That matches intuition: a chunk found by multiple phrasings of the same intent is *more* likely to be relevant, not less.
+3. **`RRF_K = 60` smooths the long tail.** Rank 1 contributes `1/61 ≈ 0.0164`; rank 10 contributes `1/70 ≈ 0.0143`. The constant prevents the top of any single list from dominating, while still rewarding higher positions. 60 is the value the original RRF paper used and most hybrid-search implementations have kept.
 
-The per-variant scores are already weighted before they reach this method (see Step 2):
+The per-variant weights are applied as part of the contribution formula:
 
 ```java
 private static final double WEIGHT_ORIGINAL = 1.25;  // user's actual phrasing
@@ -512,9 +526,9 @@ private static final double WEIGHT_HYDE     = 0.75;  // invented hypothetical an
 
 So the original query still has a slight edge over alternatives, and HyDE is discounted further because its embedding came from invented text. The 1.25 / 1.0 / 0.75 ratio is a tunable hyperparameter; on a real corpus you'd evaluate against a labeled set and pick weights that maximise top-k accuracy.
 
-**Dedup key.** `stableKey(...)` first tries metadata-based keying (`document_id:chunk_id`) when those attributes exist; otherwise it falls back to a normalized-text key (lowercased, whitespace collapsed). Exact-text equality alone is brittle when the same chunk shows up with different whitespace or with a file-name prefix; the normalisation step catches those.
+**Dedup key.** `stableKey(...)` first tries `document_id:chunk_id` (canonical structural identifiers, if the loader provides them), then `source:chunkIndex` (what the workshop's loader actually produces: filename plus the integer chunk position), and only falls back to normalized text (lowercased, whitespace collapsed) when no metadata is present. The metadata path is what fires in practice for the workshop corpus.
 
-Five queries finding 5 chunks each could in theory yield 25 distinct candidates, but the same chunks tend to appear across multiple variants. That's the reinforcement effect this step is built around. For this trace, 25 candidates collapsed to 10 unique, ranked by summed weighted RRF. The VPN policy chunk surfaced at the top because four variants and HyDE all found it, and the original query's `WEIGHT_ORIGINAL=1.25` multiplied its contribution.
+Five queries finding 5 chunks each could in theory yield 25 distinct candidates, but the same chunks tend to appear across multiple variants. That's the reinforcement effect this step is built around. For this trace, 25 candidates collapsed to 10 unique, ranked by summed weighted RRF. The VPN policy chunk surfaced at the top because four variants plus HyDE all found it at rank 1 or 2, and the original query's `WEIGHT_ORIGINAL=1.25` further amplified its contribution.
 
 ### Step 4: Context assembly
 
