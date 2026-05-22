@@ -64,6 +64,10 @@ class RAGServiceTest {
             this.vectorResults = vectorResults;
         }
 
+        // Both API shapes are exercised by callers: the legacy unscored path (for
+        // backward compat) and the scored path (used by RAGService since the
+        // cross-variant fusion refactor). Record the query under both so the
+        // assertions don't care which API the production code happens to be using.
         @Override
         public List<TextSegment> hybridSearch(String query, int topK) {
             hybridQueries.add(query);
@@ -71,9 +75,29 @@ class RAGServiceTest {
         }
 
         @Override
+        public List<ScoredSegment> hybridSearchScored(String query, int topK) {
+            hybridQueries.add(query);
+            return asScored(hybridResults, query);
+        }
+
+        @Override
         public List<TextSegment> vectorOnlySearch(String query, int topK) {
             vectorQueries.add(query);
             return vectorResults;
+        }
+
+        @Override
+        public List<ScoredSegment> vectorOnlySearchScored(String query, int topK) {
+            vectorQueries.add(query);
+            return asScored(vectorResults, query);
+        }
+
+        private static List<ScoredSegment> asScored(List<TextSegment> hits, String query) {
+            List<ScoredSegment> out = new ArrayList<>(hits.size());
+            for (int i = 0; i < hits.size(); i++) {
+                out.add(new ScoredSegment(hits.get(i), 1.0 / (60 + i + 1), query));
+            }
+            return out;
         }
     }
 
