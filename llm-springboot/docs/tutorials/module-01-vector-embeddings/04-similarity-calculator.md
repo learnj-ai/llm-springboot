@@ -42,6 +42,91 @@ graph LR
     G --> H
 ```
 
+## Vectors, Dimensions, and Magnitude: A Geometric Primer
+
+Before we look at how each metric works, two pieces of vocabulary that come up over and over in this chapter: **dimension** and **magnitude**.
+
+### Dimension: the number of axes in the space
+
+A "dimension" is just an independent axis you can measure along.
+
+- A 2-dimensional vector is a point on a plane: `[x, y]`. You can plot it on graph paper.
+- A 3-dimensional vector is a point in space: `[x, y, z]`. Picture a room.
+- A 384-dimensional vector (what `AllMiniLM-L6-v2` produces) is the same idea, just with 384 axes you can't draw. Each axis is an abstract feature the embedding model learned during training. Maybe one axis tracks "is this about food?", another tracks "is this formal language?", another encodes "is this a question?" We don't know which, and we don't need to. The model picked these axes by itself, and a single chunk of text becomes a list of 384 numbers ("how much of each feature does this text have").
+
+When the code says `vectorA.length != vectorB.length`, it's asking "are these two vectors describing points in the same space?" Comparing a 384-dim vector to a 512-dim vector is like comparing a point on graph paper to a point inside a room: there's no meaningful "distance" between them, because they don't share a coordinate system. That's why `validateDimensions(...)` exists.
+
+### Magnitude: how long the vector is
+
+Magnitude is the length of the arrow from the origin `(0, 0, …, 0)` to the vector's coordinates. Mathematically: `‖v‖ = √(v₁² + v₂² + … + vₙ²)`.
+
+- A vector `[3, 4]` has magnitude `√(9+16) = 5`.
+- A vector `[0.6, 0.8]` has magnitude `√(0.36+0.64) = 1`. Same direction, different length.
+
+For text embeddings, the magnitude often reflects something like *intensity* or *quantity*: longer/more emphatic text can produce longer vectors. Two vectors can **point the same way** (high directional similarity) but have **very different magnitudes** (e.g. "good" vs "very, very, very good"). The metric you pick decides whether that magnitude difference matters or not.
+
+A vector is called a **unit vector** when its magnitude is exactly 1. Many embedding models (including `AllMiniLM-L6-v2`) normalise their output to unit vectors, which has consequences we'll come back to below.
+
+## Picking a Metric: Cosine vs Euclidean vs Dot Product
+
+The three metrics measure different things. Quick comparison, then prose:
+
+| Metric         | What it measures              | Range            | Magnitude-sensitive? | Higher = more similar?    | Cost          |
+|----------------|-------------------------------|------------------|----------------------|---------------------------|---------------|
+| **Cosine**     | Angle between the vectors     | −1 … 1           | No                   | Yes                       | Two sums + √  |
+| **Euclidean**  | Straight-line distance        | 0 … ∞            | Yes                  | No (closer = more similar)| One sum + √   |
+| **Dot product**| Angle × both magnitudes       | −∞ … ∞ (unbounded) | Yes                | Yes (if magnitudes ≥ 0)   | One sum, no √ |
+
+### Cosine similarity: "do these two arrows point the same way?"
+
+Cosine ignores the lengths of the vectors and asks only about the **angle** between them. Two vectors pointing in exactly the same direction score 1.0 regardless of length; vectors perpendicular to each other score 0.0; opposite vectors score −1.0.
+
+This is what you want for **semantic search over text**. The reason: an embedding model might produce a longer vector for "the cat sat on the mat" than for "cat" (same topic, different emphasis). Cosine treats those as highly similar (which they are, semantically); euclidean would penalise the length difference.
+
+> **Use cosine when:** you're comparing the *meaning* of two pieces of text and don't care that one is longer or more emphatic than the other. This is the default for RAG.
+
+### Euclidean distance: "how far apart are these two points?"
+
+Euclidean is the classic Pythagorean distance, extended to N dimensions. It's sensitive to both direction *and* magnitude. Two vectors that point the same way but differ in length will still have a non-zero euclidean distance.
+
+This is useful when **magnitude carries signal**: comparing image embeddings where brightness matters, or sentiment vectors where the *intensity* of "very angry" vs "slightly annoyed" should pull them apart even if both are negative-sentiment.
+
+> **Use euclidean when:** your embeddings encode magnitude-carrying signal (image intensity, sentiment strength, document length) and you want vectors that "agree but louder" to count as less similar.
+
+Note the code's `-euclideanDistance(...)` negation in the unified `score()` method below: distance gets smaller as things get closer, but the workshop sorts results "highest score first," so the score path flips the sign to keep one consistent convention across all three metrics.
+
+### Dot product: "angle and magnitudes combined into one number"
+
+Dot product is the un-normalised version of cosine: `cosine = dotProduct / (magnitudeA × magnitudeB)`. Take cosine and stop before dividing by the magnitudes; that's dot product. So it cares about both the angle *and* how long each vector is. Two unit vectors that point the same way score 1 (same as cosine); a long vector that points the same way scores higher than a short one.
+
+It's also the cheapest of the three: no square root, no division. Some vector databases use it as the default for that reason.
+
+> **Use dot product when:** (a) your embeddings are already normalised to unit vectors (in which case dot product *equals* cosine but is faster), or (b) you genuinely want a metric that combines direction and magnitude into a single score and rewards "louder" vectors.
+
+### The "are they normalised?" question
+
+Here's the subtlety that catches people: when both vectors are unit vectors (magnitude 1), **cosine and dot product give the same answer**. The division step in cosine (`/ (‖A‖ × ‖B‖)`) becomes `/ 1`, which is a no-op.
+
+So with `AllMiniLM-L6-v2` (which normalises its output) you get:
+
+- **Cosine == dot product** at the level of score values. Pick dot product for the perf win.
+- **Euclidean distance == `√(2 − 2 × cosine)`**, a tidy identity that's *only* true for unit vectors. It lets you convert between the two without recomputing. If you ever swap in an embedding model that doesn't normalise, this identity breaks.
+
+For the workshop's defaults, treat cosine as the right pick and don't worry about the distinction.
+
+### Decision tree
+
+```
+Are the vectors normalised (unit length)?
+├── Yes
+│   ├── Want speed? ──────────────→ Dot product
+│   └── Want clarity / standard? ─→ Cosine (functionally identical)
+└── No
+    ├── Care only about meaning / direction? ─→ Cosine
+    ├── Magnitude carries signal? ────────────→ Euclidean
+    └── Want a single combined score? ────────→ Dot product
+```
+
 ## Code Deep Dive
 
 Let's explore each similarity metric in detail.

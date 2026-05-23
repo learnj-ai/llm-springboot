@@ -22,7 +22,7 @@ class RAGServiceTest {
         );
         RAGService ragService = new RAGService(searchService, new StubChatModel("Use the identity portal."), queryTransformer);
 
-        String answer = ragService.query("How do I reset my password?", true);
+        String answer = ragService.queryWithSources("How do I reset my password?", true).answer();
 
         assertThat(answer).isEqualTo("Use the identity portal.");
         assertThat(searchService.hybridQueries).containsExactly(
@@ -44,11 +44,68 @@ class RAGServiceTest {
         );
         RAGService ragService = new RAGService(searchService, new StubChatModel("Use the identity portal."), queryTransformer);
 
-        String answer = ragService.query("How do I reset my password?", true);
+        String answer = ragService.queryWithSources("How do I reset my password?", true).answer();
 
         assertThat(answer).isEqualTo("Use the identity portal.");
         assertThat(searchService.hybridQueries).containsExactly("How do I reset my password?");
         assertThat(searchService.vectorQueries).isEmpty();
+    }
+
+    @Test
+    void rrfBeatsRawScoreAcrossShards() {
+        // Different segments. RRF should rank A above C even though C carries a huge
+        // raw score in the HyDE shard, because A appears in both shards (original-hybrid
+        // and HyDE-vector) and earns two RRF contributions. C earns only one.
+        //
+        // RRF math (RRF_K = 60, WEIGHT_ORIGINAL = 1.25, WEIGHT_HYDE = 0.75):
+        //   A: 1.25/(60+1) + 0.75/(60+2) ≈ 0.03259   (original rank 1 + HyDE rank 2)
+        //   B: 1.25/(60+2)               ≈ 0.02016   (original rank 2)
+        //   C: 0.75/(60+1)               ≈ 0.01230   (HyDE rank 1 only — raw score 100 is ignored)
+        // Expected ranking: A, B, C.
+        TextSegment a = TextSegment.from("Alpha chunk about identity portal.");
+        TextSegment b = TextSegment.from("Beta chunk about password rules.");
+        TextSegment c = TextSegment.from("Charlie chunk about logging in.");
+
+        HybridSearchService searchService = new HybridSearchService(null, null, null) {
+            @Override
+            public List<ScoredSegment> hybridSearchScored(String query, int topK) {
+                return List.of(
+                        new ScoredSegment(a, 0.60, query),
+                        new ScoredSegment(b, 0.59, query));
+            }
+
+            @Override
+            public List<ScoredSegment> vectorOnlySearchScored(String query, int topK) {
+                // Deliberately huge raw scores. Rank-based RRF must ignore them.
+                return List.of(
+                        new ScoredSegment(c, 100.0, query),
+                        new ScoredSegment(a, 99.0, query));
+            }
+        };
+
+        StubQueryTransformer queryTransformer = new StubQueryTransformer(
+                List.of(),
+                "Sign in with single sign-on and verify with a hardware token.");
+
+        RAGService ragService = new RAGService(
+                searchService,
+                new StubChatModel("answer text"),
+                queryTransformer);
+
+        RAGService.RagAnswer result = ragService.queryWithSources("How do I log in?", true);
+
+        List<RAGService.Source> sources = result.sources();
+        assertThat(sources).extracting(RAGService.Source::text)
+                .containsExactly(a.text(), b.text(), c.text());
+
+        // Provenance must combine the two shards A surfaced in (the spec called this out
+        // explicitly: don't drop the cross-shard signal to first-write-wins).
+        String aProvenance = sources.get(0).sourceQuery();
+        assertThat(aProvenance).contains("hybrid:");
+        assertThat(aProvenance).contains("vector(HyDE):");
+
+        // A's fused score must beat C's despite C's 100.0 raw score on the HyDE shard.
+        assertThat(sources.get(0).score()).isGreaterThan(sources.get(2).score());
     }
 
     private static final class RecordingHybridSearchService extends HybridSearchService {
@@ -64,6 +121,10 @@ class RAGServiceTest {
             this.vectorResults = vectorResults;
         }
 
+        // Both API shapes are exercised by callers: the legacy unscored path (for
+        // backward compat) and the scored path (used by RAGService since the
+        // cross-variant fusion refactor). Record the query under both so the
+        // assertions don't care which API the production code happens to be using.
         @Override
         public List<TextSegment> hybridSearch(String query, int topK) {
             hybridQueries.add(query);
@@ -71,9 +132,29 @@ class RAGServiceTest {
         }
 
         @Override
+        public List<ScoredSegment> hybridSearchScored(String query, int topK) {
+            hybridQueries.add(query);
+            return asScored(hybridResults, query);
+        }
+
+        @Override
         public List<TextSegment> vectorOnlySearch(String query, int topK) {
             vectorQueries.add(query);
             return vectorResults;
+        }
+
+        @Override
+        public List<ScoredSegment> vectorOnlySearchScored(String query, int topK) {
+            vectorQueries.add(query);
+            return asScored(vectorResults, query);
+        }
+
+        private static List<ScoredSegment> asScored(List<TextSegment> hits, String query) {
+            List<ScoredSegment> out = new ArrayList<>(hits.size());
+            for (int i = 0; i < hits.size(); i++) {
+                out.add(new ScoredSegment(hits.get(i), 1.0 / (60 + i + 1), query));
+            }
+            return out;
         }
     }
 
