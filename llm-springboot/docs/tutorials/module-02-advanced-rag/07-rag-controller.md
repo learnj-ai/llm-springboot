@@ -106,16 +106,22 @@ The main RAG endpoint that generates answers:
 ```java
 @PostMapping("/query")
 public ResponseEntity<RAGResponse> query(@Valid @RequestBody RAGRequest request) {
-    String answer = ragService.query(request.question(), request.useQueryExpansion());
-    return ResponseEntity.ok(new RAGResponse(answer));
+    RAGService.RagAnswer result = ragService.queryWithSources(
+            request.question(), request.useQueryExpansion());
+    return ResponseEntity.ok(new RAGResponse(
+            result.answer(),
+            result.sources(),
+            result.transformedQueries(),
+            result.elapsedMs(),
+            result.status()));
 }
 ```
 
 **Simple but powerful:**
 1. **`@PostMapping("/query")`**: Maps to `POST /api/v1/rag/query`
 2. **`@Valid @RequestBody RAGRequest`**: Validates the request DTO before processing
-3. **Call RAGService**: Delegate to the service layer (separation of concerns)
-4. **Wrap response**: Return `RAGResponse` DTO
+3. **Call RAGService**: Delegate to the service layer, which returns a `RagAnswer` with the answer text, citations, the query variants that ran, elapsed time, and a `RagStatus` so the client can distinguish a grounded answer from a degraded one.
+4. **Wrap response**: Map `RagAnswer` to `RAGResponse` DTO (same fields, exposed over JSON).
 5. **`ResponseEntity.ok()`**: Returns HTTP 200 with JSON body
 
 **Why `ResponseEntity`?** Allows control over HTTP status codes, headers, etc. You could return `RAGResponse` directly, but `ResponseEntity` is more flexible.
@@ -517,15 +523,19 @@ private MeterRegistry meterRegistry;
 public ResponseEntity<RAGResponse> query(@Valid @RequestBody RAGRequest request) {
     Timer.Sample sample = Timer.start(meterRegistry);
 
-    String answer = ragService.query(request.question(), request.useQueryExpansion());
+    RAGService.RagAnswer result = ragService.queryWithSources(
+            request.question(), request.useQueryExpansion());
 
     sample.stop(Timer.builder("rag.query.duration")
             .tag("expansion", String.valueOf(request.useQueryExpansion()))
+            .tag("status", result.status().name())
             .register(meterRegistry));
 
     meterRegistry.counter("rag.query.total").increment();
 
-    return ResponseEntity.ok(new RAGResponse(answer));
+    return ResponseEntity.ok(new RAGResponse(
+            result.answer(), result.sources(),
+            result.transformedQueries(), result.elapsedMs(), result.status()));
 }
 ```
 
@@ -546,11 +556,15 @@ Log all incoming requests with details:
 public ResponseEntity<RAGResponse> query(@Valid @RequestBody RAGRequest request) {
     log.info("Received RAG query: question='{}', expansion={}", request.question(), request.useQueryExpansion());
 
-    String answer = ragService.query(request.question(), request.useQueryExpansion());
+    RAGService.RagAnswer result = ragService.queryWithSources(
+            request.question(), request.useQueryExpansion());
 
-    log.info("RAG query completed: answerLength={}", answer.length());
+    log.info("RAG query completed: status={}, answerLength={}, sources={}",
+            result.status(), result.answer().length(), result.sources().size());
 
-    return ResponseEntity.ok(new RAGResponse(answer));
+    return ResponseEntity.ok(new RAGResponse(
+            result.answer(), result.sources(),
+            result.transformedQueries(), result.elapsedMs(), result.status()));
 }
 ```
 

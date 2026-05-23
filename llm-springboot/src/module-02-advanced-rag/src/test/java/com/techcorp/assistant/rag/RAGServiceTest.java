@@ -22,7 +22,7 @@ class RAGServiceTest {
         );
         RAGService ragService = new RAGService(searchService, new StubChatModel("Use the identity portal."), queryTransformer);
 
-        String answer = ragService.query("How do I reset my password?", true);
+        String answer = ragService.queryWithSources("How do I reset my password?", true).answer();
 
         assertThat(answer).isEqualTo("Use the identity portal.");
         assertThat(searchService.hybridQueries).containsExactly(
@@ -44,7 +44,7 @@ class RAGServiceTest {
         );
         RAGService ragService = new RAGService(searchService, new StubChatModel("Use the identity portal."), queryTransformer);
 
-        String answer = ragService.query("How do I reset my password?", true);
+        String answer = ragService.queryWithSources("How do I reset my password?", true).answer();
 
         assertThat(answer).isEqualTo("Use the identity portal.");
         assertThat(searchService.hybridQueries).containsExactly("How do I reset my password?");

@@ -117,29 +117,6 @@ public class RAGService {
     }
 
     /**
-     * Legacy answer-only API.
-     *
-     * @deprecated The prompt instructs the model to emit {@code [Source N]} citations inline,
-     *     but this method returns a {@code String} and gives the caller no way to resolve
-     *     those numbers back to source text. Use {@link #queryWithSources(String, boolean)}
-     *     and read {@link RagAnswer#sources()} so the {@code [Source 3]} marker maps to
-     *     {@code sources.get(2)} programmatically. Kept for backward compatibility; will be
-     *     removed in a future workshop revision.
-     */
-    @Deprecated(since = "1.1", forRemoval = false)
-    public String query(String userQuestion) {
-        return query(userQuestion, true);
-    }
-
-    /**
-     * Legacy answer-only API. See {@link #query(String)} for why this is deprecated.
-     */
-    @Deprecated(since = "1.1", forRemoval = false)
-    public String query(String userQuestion, boolean useQueryExpansion) {
-        return queryWithSources(userQuestion, useQueryExpansion).answer();
-    }
-
-    /**
      * Full RAG pipeline returning the answer plus the sources, transformed queries, a status,
      * and total elapsed time. {@link RagAnswer#status()} distinguishes a real answer from
      * insufficient context, retrieval failure, generation failure, and cancellation.
