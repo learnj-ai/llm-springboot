@@ -404,19 +404,23 @@ public class RAGService {
 
     // ===== Step 3: real rank-based RRF =====
     //
-    // For every chunk encountered across any variant, the fused score is the sum of
-    //     weight × 1 / (RRF_K + rank)
-    // contributions, where rank is the chunk's position (1-indexed) inside its source
-    // variant's result list. This is the textbook RRF formula (Cormack et al., 2009; the
-    // same one Elasticsearch/Azure/Vespa hybrid-search docs describe). It's intentionally
-    // rank-based, not score-based, so it doesn't care that vector cosine scores live on
-    // a different scale from BM25 scores or HyDE scores. The only knobs are RRF_K and the
-    // per-source weights.
+    // Compute rank-based RRF contributions per retrieval shard. Raw retriever scores
+    // (ScoredSegment.score() on the hits coming in) are retained on the input objects
+    // for observability only; final fusion uses rank positions so scores from hybrid
+    // search (BM25 + cosine) and vector-only HyDE search do not need to be calibrated
+    // onto the same scale. Per chunk:
+    //
+    //     fused = Σ_shards  weight_shard × 1 / (RRF_K + rank_in_shard)
+    //
+    // Provenance is combined across shards: if the same chunk appears in three shards,
+    // the output Source.sourceQuery records all three retriever:query pairs joined with
+    // " | " so the answer-side caller can show "why this chunk won" without losing the
+    // multi-shard signal to first-write-wins.
 
     private List<ScoredSegment> fuseWithRrf(List<VariantHits> variants, int maxResults) {
         Map<String, Double> scoreByKey = new LinkedHashMap<>();
         Map<String, ScoredSegment> bestByKey = new LinkedHashMap<>();
-        Map<String, String> sourceByKey = new LinkedHashMap<>();
+        Map<String, String> provenanceByKey = new LinkedHashMap<>();
 
         for (VariantHits variant : variants) {
             List<ScoredSegment> hits = variant.hits();
@@ -428,10 +432,12 @@ public class RAGService {
                 String key = stableKey(hit.segment());
                 scoreByKey.merge(key, contribution, Double::sum);
                 bestByKey.putIfAbsent(key, hit);
-                // Track which variant first surfaced this chunk so the response can show
-                // attribution in Source.sourceQuery — useful for "why did this chunk
-                // win?" diagnostics.
-                sourceByKey.putIfAbsent(key, variant.sourceQuery());
+
+                String provenance = variant.retriever() + ": " + variant.sourceQuery();
+                provenanceByKey.merge(
+                        key,
+                        provenance,
+                        (existing, next) -> existing.contains(next) ? existing : existing + " | " + next);
             }
         }
 
@@ -440,7 +446,7 @@ public class RAGService {
                 .limit(maxResults)
                 .map(e -> {
                     ScoredSegment seed = bestByKey.get(e.getKey());
-                    return new ScoredSegment(seed.segment(), e.getValue(), sourceByKey.get(e.getKey()));
+                    return new ScoredSegment(seed.segment(), e.getValue(), provenanceByKey.get(e.getKey()));
                 })
                 .toList();
     }
