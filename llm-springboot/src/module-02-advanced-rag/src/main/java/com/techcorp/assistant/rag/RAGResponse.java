@@ -10,9 +10,9 @@ import java.util.List;
  * <p>{@code sources} mirrors {@link RAGService.RagAnswer#sources()}: one entry per
  * {@code [Source N]} block injected into the prompt, in the post-fusion ranked order.
  * Each entry exposes the chunk text, the document title from metadata, the cross-variant
- * RRF score, and the query variant that first surfaced the chunk. A UI can map a
- * {@code [Source 3]} citation in {@link #answer()} back to {@code sources[2]} (zero-indexed)
- * to render attribution.
+ * RRF score, and the combined retriever/query provenance for every shard that surfaced
+ * the chunk. A UI can map a {@code [Source 3]} citation in {@link #answer()} back to
+ * {@code sources[2]} (zero-indexed) to render attribution.
  *
  * <p>{@code transformedQueries} is the list of strings actually run through retrieval:
  * the original question, followed by the multi-query alternatives, followed by a
@@ -39,7 +39,7 @@ public record RAGResponse(
         long elapsedMs,
         RAGService.RagStatus status) {
 
-    /** Convenience constructor for the legacy answer-only shape (used by error paths). */
+    /** Convenience constructor for legacy answer-only callers. */
     public RAGResponse(String answer) {
         this(answer, List.of(), List.of(), 0L, RAGService.RagStatus.INSUFFICIENT_CONTEXT);
     }

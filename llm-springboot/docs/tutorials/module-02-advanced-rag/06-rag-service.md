@@ -153,7 +153,7 @@ public class RAGService {
 
 ```java
 try (var scope = StructuredTaskScope.open(
-        Joiner.<Object>awaitAllSuccessfulOrThrow(),
+        Joiner.awaitAllSuccessfulOrThrow(),
         config -> config.withTimeout(STEP1_TIMEOUT))) {
 
     Subtask<List<String>> multiQueryTask = scope.fork(() -> safeMultiQuery(userQuestion));
@@ -170,7 +170,7 @@ try (var scope = StructuredTaskScope.open(
 **Key points:**
 - **Two LLM calls run concurrently**: multi-query and HyDE are independent, so they go through the same scope
 - **`safeMultiQuery` / `safeHyde` swallow recoverable errors**: a single LLM hiccup degrades that branch rather than failing the whole pipeline
-- **Sanitisation**: `sanitizeAlternatives` drops blanks, dedupes case-insensitively, removes near-equals to the original, and caps at 4 — belt-and-braces around the LLM contract
+- **Sanitisation**: `sanitizeAlternatives` drops blanks, trims whitespace, dedupes case-insensitively, removes exact case-insensitive echoes of the original, and caps at 4 — belt-and-braces around the LLM contract
 - **Time budget**: 20 seconds covers two LLM calls in parallel with headroom; on timeout we fall back to the original query alone
 
 ### Stage 2: Multi-Path Retrieval (parallel)
@@ -272,7 +272,11 @@ private String buildCitedContext(List<ScoredSegment> ranked) {
         sb.append("[Source ").append(i + 1).append("]");
         if (title != null) sb.append(" title=").append(title);
         if (chunkIndex != null) sb.append(" chunk=").append(chunkIndex);
-        sb.append('\n').append(s.segment().text()).append("\n\n");
+        sb.append('\n');
+        sb.append(s.segment().text());
+        if (i < ranked.size() - 1) {
+            sb.append("\n\n");
+        }
     }
     return sb.toString();
 }
@@ -328,7 +332,7 @@ public enum RagStatus {
     INSUFFICIENT_CONTEXT, // no chunk passed retrieval; fallback string returned
     RETRIEVAL_FAILED,     // every search call errored or returned empty
     GENERATION_FAILED,    // retrieval succeeded but the LLM threw
-    CANCELLED             // step 1 or step 2 hit a timeout or interrupt
+    CANCELLED             // retrieval scope hit a timeout or interrupt
 }
 
 public record Source(
@@ -397,10 +401,10 @@ curl -X POST http://localhost:8082/api/v1/rag/query \
 `MIN_FUSED_SCORE` is a knob (default `0.0` — no filtering). Raise it and observe what gets dropped:
 
 ```java
-private static final double MIN_FUSED_SCORE = 0.015;
+private static final double MIN_FUSED_SCORE = 0.016;
 ```
 
-At `0.015`, single-shard rank-3+ hits get filtered out (one shard at rank 3 contributes ~`1/63 ≈ 0.0159`, rank 4 is ~`0.0156`). Run the same query and see whether the answer quality improves (fewer marginal chunks) or degrades (legitimately useful chunks dropped).
+At `0.016`, a single expanded-query shard keeps rank 1 and rank 2 (`1/61 ≈ 0.0164`, `1/62 ≈ 0.0161`) but drops rank 3+ (`1/63 ≈ 0.0159`). HyDE-only singletons are also dropped because the `0.75` weight makes even rank 1 contribute only about `0.0123`. Chunks found by multiple shards still pass because their contributions are summed. Run the same query and see whether answer quality improves (fewer marginal chunks) or degrades (legitimately useful chunks dropped).
 
 **Questions to explore:**
 - Which threshold gives you the cleanest top-N for your corpus? `0.01`? `0.02`?

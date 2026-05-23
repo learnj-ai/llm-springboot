@@ -5,9 +5,11 @@ import dev.langchain4j.model.chat.ChatModel;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.StructuredTaskScope;
 import java.util.concurrent.StructuredTaskScope.Joiner;
 import java.util.concurrent.StructuredTaskScope.Subtask;
@@ -82,8 +84,9 @@ public class RAGService {
     /**
      * Minimum fused score required for a chunk to make it into the LLM context. Default 0.0
      * means "no filtering"; tune up when the corpus is large enough that weak top-N hits
-     * become a hallucination risk. RRF scores at K=60 are in roughly {@code [0, ~0.05]}
-     * before weighting, so production values typically sit in {@code 0.005 - 0.02}.
+     * become a hallucination risk. A single top-5 shard contributes roughly {@code 0.015}
+     * to {@code 0.016} at K=60 before weighting; chunks found by multiple variants sum
+     * above that range.
      */
     private static final double MIN_FUSED_SCORE = 0.0;
 
@@ -233,8 +236,7 @@ public class RAGService {
         List<String> alts = List.of();
         String hyde = null;
 
-        try (var scope = StructuredTaskScope.open(
-                Joiner.<Object>awaitAllSuccessfulOrThrow(),
+        try (var scope = StructuredTaskScope.open(Joiner.awaitAllSuccessfulOrThrow(),
                 config -> config.withTimeout(STEP1_TIMEOUT))) {
 
             Subtask<List<String>> multiQueryTask = scope.fork(() -> safeMultiQuery(userQuestion));
@@ -393,13 +395,24 @@ public class RAGService {
         // QueryTransformer already strips numbering, dedups case-insensitively, and caps at
         // ALTERNATIVE_QUERY_COUNT, but we belt-and-brace here in case the contract changes
         // upstream or a stub is plugged in for testing.
-        return alternatives.stream()
-                .filter(s -> s != null && !s.isBlank())
-                .map(String::trim)
-                .distinct()
-                .filter(s -> !s.equalsIgnoreCase(originalQuery.trim()))
-                .limit(4)
-                .toList();
+        String originalKey = originalQuery.trim().toLowerCase(Locale.ROOT);
+        Set<String> seen = new LinkedHashSet<>();
+        List<String> sanitized = new ArrayList<>();
+        for (String alternative : alternatives) {
+            if (alternative == null || alternative.isBlank()) {
+                continue;
+            }
+            String trimmed = alternative.trim();
+            String key = trimmed.toLowerCase(Locale.ROOT);
+            if (key.equals(originalKey) || !seen.add(key)) {
+                continue;
+            }
+            sanitized.add(trimmed);
+            if (sanitized.size() >= 4) {
+                break;
+            }
+        }
+        return List.copyOf(sanitized);
     }
 
     // ===== Step 3: real rank-based RRF =====
@@ -609,7 +622,7 @@ public class RAGService {
         RETRIEVAL_FAILED,
         /** Retrieval succeeded but the LLM call threw. Sources are still populated. */
         GENERATION_FAILED,
-        /** Step 1 or Step 2 was interrupted or hit a scope timeout. */
+        /** Retrieval was interrupted or hit a scope timeout. */
         CANCELLED
     }
 
@@ -640,8 +653,8 @@ public class RAGService {
      * One retrieved source attached to a {@link RagAnswer}. The {@code number} matches the
      * {@code [Source N]} label injected into the LLM prompt, so a UI can map each citation
      * in the answer text back to the source it came from. {@code score} is the fused RRF
-     * score (post-weighting); {@code sourceQuery} is the query variant that first surfaced
-     * the chunk during retrieval.
+     * score (post-weighting); {@code sourceQuery} is combined retriever/query provenance
+     * for every retrieval shard that surfaced the chunk.
      */
     public record Source(
             int number,

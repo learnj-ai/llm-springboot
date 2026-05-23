@@ -33,7 +33,11 @@ Content-Type: application/json
 
 ```json
 {
-  "answer": "To reset your password, navigate to..."
+  "answer": "To reset your password, navigate to...",
+  "sources": [],
+  "transformedQueries": ["How do I reset my password?"],
+  "elapsedMs": 1420,
+  "status": "ANSWERED"
 }
 ```
 
@@ -43,11 +47,13 @@ Every endpoint returns a predictable structure—no surprises.
 
 ```json
 {
-  "timestamp": "2026-05-08T10:30:45.123Z",
-  "status": 400,
-  "error": "Bad Request",
-  "message": "question must not be blank",
-  "path": "/api/v1/rag/query"
+  "error": "Validation failed",
+  "details": [
+    {
+      "field": "question",
+      "message": "must not be blank"
+    }
+  ]
 }
 ```
 
@@ -129,9 +135,9 @@ public ResponseEntity<RAGResponse> query(@Valid @RequestBody RAGRequest request)
 ### Request DTO: RAGRequest
 
 ```java
-// Defined as a record in RAGController (could be a separate file)
+// Defined in RAGRequest.java
 record RAGRequest(
-        @NotBlank(message = "question must not be blank")
+        @NotBlank
         String question,
 
         Boolean useQueryExpansion
@@ -154,20 +160,20 @@ record RAGRequest(
 ### Response DTO: RAGResponse
 
 ```java
-record RAGResponse(String answer) {}
+public record RAGResponse(
+        String answer,
+        List<RAGService.Source> sources,
+        List<String> transformedQueries,
+        long elapsedMs,
+        RAGService.RagStatus status) {
+
+    public RAGResponse(String answer) {
+        this(answer, List.of(), List.of(), 0L, RAGService.RagStatus.INSUFFICIENT_CONTEXT);
+    }
+}
 ```
 
-Minimal response structure—just the generated answer.
-
-**Production enhancements:**
-```java
-record RAGResponse(
-    String answer,
-    List<String> sources,      // URLs or document IDs
-    int segmentsUsed,          // How many segments were in the context
-    long latencyMs             // Pipeline execution time
-) {}
-```
+The response exposes the generated text plus the exact source list and query trace that `RAGService.RagAnswer` produced. The one-argument constructor is only a convenience for legacy answer-only callers; the controller's normal path uses the five-argument shape.
 
 ### Validation in Action
 
@@ -184,11 +190,13 @@ What happens if the client sends invalid data?
 **Response (HTTP 400):**
 ```json
 {
-  "timestamp": "2026-05-08T10:30:45.123Z",
-  "status": 400,
-  "error": "Bad Request",
-  "message": "question must not be blank",
-  "path": "/api/v1/rag/query"
+  "error": "Validation failed",
+  "details": [
+    {
+      "field": "question",
+      "message": "must not be blank"
+    }
+  ]
 }
 ```
 
@@ -301,45 +309,26 @@ The module includes a `GlobalExceptionHandler` to catch validation errors and ot
 public class GlobalExceptionHandler {
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<Map<String, Object>> handleValidationErrors(
-            MethodArgumentNotValidException ex, HttpServletRequest request) {
+    public ResponseEntity<Map<String, Object>> handleValidation(MethodArgumentNotValidException ex) {
 
-        List<String> errors = ex.getBindingResult()
-                .getFieldErrors()
-                .stream()
-                .map(error -> error.getField() + ": " + error.getDefaultMessage())
+        var errors = ex.getBindingResult().getFieldErrors().stream()
+                .map(error -> Map.of("field", error.getField(), "message", (Object) error.getDefaultMessage()))
                 .toList();
 
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("timestamp", Instant.now());
-        body.put("status", HttpStatus.BAD_REQUEST.value());
-        body.put("error", "Bad Request");
-        body.put("message", errors);
-        body.put("path", request.getRequestURI());
-
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+        return ResponseEntity.badRequest().body(Map.of("error", "Validation failed", "details", errors));
     }
 
-    @ExceptionHandler(Exception.class)
-    public ResponseEntity<Map<String, Object>> handleGeneralErrors(
-            Exception ex, HttpServletRequest request) {
-
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("timestamp", Instant.now());
-        body.put("status", HttpStatus.INTERNAL_SERVER_ERROR.value());
-        body.put("error", "Internal Server Error");
-        body.put("message", ex.getMessage());
-        body.put("path", request.getRequestURI());
-
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<Map<String, String>> handleUnreadable(HttpMessageNotReadableException ex) {
+        return ResponseEntity.badRequest().body(Map.of("error", "Malformed request body"));
     }
 }
 ```
 
 **What it does:**
 - **`@RestControllerAdvice`**: Global exception handler for all controllers
-- **`handleValidationErrors`**: Catches `@Valid` validation failures, returns HTTP 400 with field errors
-- **`handleGeneralErrors`**: Catches all other exceptions, returns HTTP 500 with error message
+- **`handleValidation`**: Catches `@Valid` validation failures, returns HTTP 400 with field errors
+- **`handleUnreadable`**: Catches malformed JSON/request bodies, returns HTTP 400 with a compact message
 
 **Production enhancements:**
 - **Don't leak stack traces**: Log them server-side, return generic messages to clients
@@ -364,7 +353,22 @@ curl -X POST http://localhost:8082/api/v1/rag/query \
 **Expected Response (HTTP 200):**
 ```json
 {
-  "answer": "To reset your password, navigate to the IT Portal and click 'Forgot Password'..."
+  "answer": "To reset your password, navigate to the IT Portal and click 'Forgot Password'...",
+  "sources": [
+    {
+      "number": 1,
+      "title": "password-reset.md",
+      "text": "...",
+      "score": 0.0478,
+      "sourceQuery": "hybrid: How do I reset my password?"
+    }
+  ],
+  "transformedQueries": [
+    "How do I reset my password?",
+    "What is the process for password recovery?"
+  ],
+  "elapsedMs": 1420,
+  "status": "ANSWERED"
 }
 ```
 
@@ -382,11 +386,13 @@ curl -X POST http://localhost:8082/api/v1/rag/query \
 **Expected Response (HTTP 400):**
 ```json
 {
-  "timestamp": "2026-05-08T10:30:45.123Z",
-  "status": 400,
-  "error": "Bad Request",
-  "message": ["question: must not be blank"],
-  "path": "/api/v1/rag/query"
+  "error": "Validation failed",
+  "details": [
+    {
+      "field": "question",
+      "message": "must not be blank"
+    }
+  ]
 }
 ```
 
@@ -425,8 +431,13 @@ curl -X POST http://localhost:8082/api/v1/rag/compare \
 **Expected Response (HTTP 400):**
 ```json
 {
-  "status": 400,
-  "message": ["topK: must be less than or equal to 20"]
+  "error": "Validation failed",
+  "details": [
+    {
+      "field": "topK",
+      "message": "must be less than or equal to 20"
+    }
+  ]
 }
 ```
 
@@ -575,24 +586,21 @@ public ResponseEntity<RAGResponse> query(@Valid @RequestBody RAGRequest request)
 - What patterns emerge in the logs?
 - Are most users enabling or disabling query expansion?
 
-### Exercise 2: Add Citation Support
+### Exercise 2: Render Citation Sources
 
-Enhance the response to include source citations:
+The response already includes source citations. Build a client-side view model that maps citation markers in the answer back to `sources`:
 
 ```java
-record RAGResponse(
-    String answer,
-    List<Citation> citations
-) {}
-
-record Citation(
-    String text,      // Segment text
-    String source,    // Document filename
-    int chunkIndex    // Chunk number
+record CitationView(
+    int number,
+    String title,
+    String preview,
+    double score,
+    String provenance
 ) {}
 ```
 
-Modify `RAGService` to return both answer and segments, then build citations in the controller.
+Use `Source.number()` to match `[Source N]`, `Source.title()` for the document label, and `Source.sourceQuery()` to show which query variants surfaced the chunk.
 
 ### Exercise 3: Implement Pagination for Compare
 

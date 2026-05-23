@@ -34,8 +34,7 @@ public class RAGController {
     @PostMapping("/query")
     public ResponseEntity<RAGResponse> query(@Valid @RequestBody RAGRequest request) {
         // Use the rich pipeline result so the response can carry citations and a
-        // pipeline trace alongside the answer. The thin `query(...) -> String` API
-        // is still available for callers that only need the answer text.
+        // pipeline trace alongside the answer.
         RAGService.RagAnswer result = ragService.queryWithSources(
                 request.question(), request.useQueryExpansion());
         return ResponseEntity.ok(new RAGResponse(
