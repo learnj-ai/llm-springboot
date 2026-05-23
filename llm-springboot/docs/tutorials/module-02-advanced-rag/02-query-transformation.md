@@ -55,7 +55,8 @@ Here's how query transformation fits into the RAG pipeline:
 
 ```mermaid
 graph TD
-    A[User Question] --> B[QueryTransformer]
+    A[User Question] --> Q[RAGService.queryWithSources]
+    Q --> B[QueryTransformer]
 
     B --> C[multiQuery]
     C --> D[LLM: Generate Variants]
@@ -75,10 +76,12 @@ graph TD
     J --> L[VectorStoreService]
     L --> M[Vector Search Only]
 
-    K --> N[Search Results Pool]
+    K --> N[Per-variant ranked hits]
     M --> N
-    N --> O[Deduplication]
-    O --> P[Re-Ranking]
+    N --> O["fuseWithRrf: rank-based RRF + stable-key dedup"]
+    O --> R["Top-N ScoredSegments with combined provenance"]
+    R --> S[LLM with cited context]
+    S --> T["RagAnswer: answer + sources + status"]
 ```
 
 **Key insight**: Multi-query variants go through **hybrid search** (vector + keyword), while the HyDE document goes through **vector-only search** (it's already detailed, so keyword matching is less valuable).
