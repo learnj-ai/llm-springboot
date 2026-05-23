@@ -478,11 +478,14 @@ public ResponseEntity<RAGResponse> query(
     MDC.put("correlationId", correlationId);
     log.info("Processing RAG query: {}", request.question());
 
-    // ... pipeline execution ...
+    RAGService.RagAnswer result = ragService.queryWithSources(
+            request.question(), request.useQueryExpansion());
 
     return ResponseEntity.ok()
             .header("X-Correlation-ID", correlationId)
-            .body(new RAGResponse(answer));
+            .body(new RAGResponse(
+                    result.answer(), result.sources(),
+                    result.transformedQueries(), result.elapsedMs(), result.status()));
 }
 ```
 

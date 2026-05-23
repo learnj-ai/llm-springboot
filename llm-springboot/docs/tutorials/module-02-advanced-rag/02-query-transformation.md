@@ -448,7 +448,7 @@ In the latest trace, Step 2 elapsed dropped from 142 ms (sequential) to 73 ms (p
 
 Thread-safety is easy to argue for: `VectorStoreService` builds its index in `@PostConstruct` and is read-only afterwards, `KeywordSearchService` computes BM25 from immutable segments, and the `ReRanker` implementations don't keep state between calls. Concurrent reads against any of these are safe.
 
-A small UX note in the code: the per-shard "Hybrid search for X → N results" log lines would otherwise interleave under load and confuse readers of the trace. To keep the workshop log readable, `RAGService` collects each shard's label and result count into a small `RetrievalShard` record while subtasks are running, then prints them in deterministic order after `scope.join()`.
+A small UX note in the code: the per-shard "Hybrid search for X → N results" log lines would otherwise interleave under load and confuse readers of the trace. To keep the workshop log readable, `RAGService` collects each variant's label, source weight, retriever name, and hit list into a `VariantHits` record while subtasks are running, then prints them in deterministic order after `scope.join()`.
 
 For comparison with the original sequential version, the table below uses the numbers from the *first* trace captured against this corpus:
 
@@ -531,7 +531,7 @@ So the original query still has a slight edge over alternatives, and HyDE is dis
 
 **Dedup key.** `stableKey(...)` first tries `document_id:chunk_id` (canonical structural identifiers, if the loader provides them), then `source:chunkIndex` (what the workshop's loader actually produces: filename plus the integer chunk position), and only falls back to normalized text (lowercased, whitespace collapsed) when no metadata is present. The metadata path is what fires in practice for the workshop corpus.
 
-Five queries finding 5 chunks each could in theory yield 25 distinct candidates, but the same chunks tend to appear across multiple variants. That's the reinforcement effect this step is built around. For this trace, 25 candidates collapsed to 10 unique, ranked by summed weighted RRF. The VPN policy chunk surfaced at the top because four variants plus HyDE all found it at rank 1 or 2, and the original query's `WEIGHT_ORIGINAL=1.25` further amplified its contribution.
+Five queries finding 5 chunks each could in theory yield 25 distinct candidates, but the same chunks tend to appear across multiple variants. That's the reinforcement effect this step is built around. For this trace, 25 candidates collapsed to 10 unique, ranked by summed rank-based RRF contributions. The VPN policy chunk surfaced at the top because four variants plus HyDE all found it at rank 1 or 2; each contributed `weight × 1 / (60 + rank)` to its fused score, with the original query's `WEIGHT_ORIGINAL = 1.25` giving its contribution the largest single boost.
 
 ### Step 4: Context assembly
 
