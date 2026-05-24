@@ -12,10 +12,16 @@ public class ChatModelConfiguration {
     @Bean
     ChatModel chatModel(
             @Value("${langchain4j.open-ai.api-key}") String apiKey,
-            @Value("${langchain4j.open-ai.model-name:gpt-4o-mini}") String modelName) {
-        return OpenAiChatModel.builder()
+            @Value("${langchain4j.open-ai.model-name:gpt-4o-mini}") String modelName,
+            @Value("${langchain4j.open-ai.api-base:}") String apiBase) {
+        var builder = OpenAiChatModel.builder()
                 .apiKey(apiKey)
-                .modelName(modelName)
-                .build();
+                .modelName(modelName);
+
+        if (apiBase != null && !apiBase.isBlank()) {
+            builder.baseUrl(apiBase);
+        }
+
+        return builder.build();
     }
 }

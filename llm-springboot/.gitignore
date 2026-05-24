@@ -35,5 +35,9 @@ nbdist/
 *.log
 audit.log
 
+# Environment variables
+.env
+.env.local
+
 # Node (Antora)
 node_modules/

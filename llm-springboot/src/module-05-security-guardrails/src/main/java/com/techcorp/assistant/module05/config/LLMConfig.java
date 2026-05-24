@@ -14,6 +14,9 @@ public class LLMConfig {
     @Value("${openai.api.key}")
     private String openAiApiKey;
 
+    @Value("${OPENAI_API_BASE}")
+    private String apiBase;
+
     @Value("${openai.model.name}")
     private String modelName;
 
@@ -28,6 +31,7 @@ public class LLMConfig {
         return OpenAiChatModel.builder()
                 .apiKey(openAiApiKey)
                 .modelName(modelName)
+                .baseUrl(apiBase)
                 .temperature(0.7)
                 .timeout(Duration.ofSeconds(60))
                 .logRequests(true)
@@ -39,6 +43,7 @@ public class LLMConfig {
     public ChatModel validatorChatModel() {
         return OpenAiChatModel.builder()
                 .apiKey(openAiApiKey)
+                .baseUrl(apiBase)
                 .modelName(validatorModelName)
                 .temperature(validatorTemperature)
                 .timeout(Duration.ofSeconds(30))

@@ -16,6 +16,9 @@ public class LLMConfig {
     @Value("${openai.api.key}")
     private String openAiApiKey;
 
+    @Value("${OPENAI_API_BASE}")
+    private String apiBase;
+
     @Value("${openai.model.name}")
     private String modelName;
 
@@ -26,6 +29,7 @@ public class LLMConfig {
     public ChatModel chatModel() {
         return OpenAiChatModel.builder()
                 .apiKey(openAiApiKey)
+                .baseUrl(apiBase)
                 .modelName(modelName)
                 .temperature(0.7)
                 .timeout(Duration.ofSeconds(60))
@@ -38,6 +42,7 @@ public class LLMConfig {
     public EmbeddingModel embeddingModel() {
         return OpenAiEmbeddingModel.builder()
                 .apiKey(openAiApiKey)
+                .baseUrl(apiBase)
                 .modelName(embeddingModelName)
                 .timeout(Duration.ofSeconds(30))
                 .build();
