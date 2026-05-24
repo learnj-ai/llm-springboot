@@ -14,6 +14,7 @@ server:
 openai:
   api:
     key: ${OPENAI_API_KEY}
+    base: ${OPENAI_API_BASE:https://api.openai.com/}
   model:
     name: ${OPENAI_MODEL_NAME:gpt-4o}
   validator:
