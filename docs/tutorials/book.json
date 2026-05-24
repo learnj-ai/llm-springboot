@@ -5,8 +5,12 @@
   "language": "en",
   "gitbook": "3.x.x",
   "plugins": [
-    "mermaid-hybrid",
     "-theme-default",
+    "-search",
+    "lunr",
+    "highlight",
+    "fontsettings",
+    "mermaid-md-adoc",
     "theme-learnj"
   ],
   "pluginsConfig": {
@@ -22,6 +26,11 @@
       "githubUrl": "https://github.com/learnj-ai/workshops",
       "showLevel": false
     }
+  },
+  "fontsettings": {
+    "theme": "white",
+    "family": "sans",
+    "size": 2
   },
   "variables": {
     "workshop": "LLM Applications with Spring Boot",

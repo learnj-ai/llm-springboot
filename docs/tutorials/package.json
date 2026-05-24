@@ -23,6 +23,7 @@
   "devDependencies": {
     "honkit": "^5.1.5",
     "honkit-plugin-mermaid-hybrid": "^1.0.2",
-    "honkit-plugin-theme-learnj": "^1.0.0"
+    "honkit-plugin-mermaid-md-adoc": "^0.0.8",
+    "honkit-plugin-theme-learnj": "^1.0.3"
   }
 }
