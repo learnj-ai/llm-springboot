@@ -23,6 +23,9 @@ public class MCPServerConfig {
     @Value("${openai.model.name:gpt-4o-mini}")
     private String modelName;
 
+    @Value("${OPENAI_API_BASE}")
+    private String apiBase;
+
     /**
      * Creates a chat model bean for use throughout the application.
      *
@@ -35,6 +38,7 @@ public class MCPServerConfig {
         return OpenAiChatModel.builder()
                 .apiKey(openAiApiKey)
                 .modelName(modelName)
+                .baseUrl(apiBase)
                 .temperature(0.7)
                 .timeout(Duration.ofSeconds(60))
                 .maxRetries(3)
