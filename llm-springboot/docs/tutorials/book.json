@@ -5,15 +5,22 @@
   "language": "en",
   "gitbook": "3.x.x",
   "plugins": [
-    "mermaid-hybrid"
+    "mermaid-hybrid",
+    "-theme-default",
+    "theme-learnj"
   ],
   "pluginsConfig": {
     "mermaid-hybrid": {
       "theme": "default",
       "useInlineSvgStyles": true,
       "mermaid": {
-        "themeCSS": ".node rect { fill: #f9f9f9; stroke: #333; } .edgeLabel { background-color: white; }"
+        "themeCSS": ".node rect { fill: hsl(var(--muted)); stroke: hsl(var(--border)); } .edgeLabel { background-color: hsl(var(--background)); }"
       }
+    },
+    "theme-learnj": {
+      "logoText": "LLM Spring Boot",
+      "githubUrl": "https://github.com/learnj-ai/workshops",
+      "showLevel": false
     }
   },
   "variables": {
