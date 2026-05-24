@@ -20,6 +20,9 @@ public class AgentConfig {
     @Value("${openai.api.key}")
     private String openAiApiKey;
 
+    @Value("${OPENAI_API_BASE}")
+    private String apiBase;
+
     @Value("${openai.model.name:gpt-4o-mini}")
     private String modelName;
 
@@ -33,6 +36,7 @@ public class AgentConfig {
     public ChatModel chatModel() {
         return OpenAiChatModel.builder()
                 .apiKey(openAiApiKey)
+                .baseUrl(apiBase)
                 .modelName(modelName)
                 .temperature(temperature)
                 .timeout(Duration.ofSeconds(60))
