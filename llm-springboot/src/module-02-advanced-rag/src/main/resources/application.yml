@@ -8,7 +8,8 @@ server:
 langchain4j:
   open-ai:
     api-key: ${OPENAI_API_KEY:demo}
-    model-name: ${OPENAI_MODEL_NAME:gpt-4}
+    model-name:  ${OPENAI_MODEL_NAME:gpt-4}
+    api-base: ${OPENAI_API_BASE:https://api.openai.com/}
 
 logging:
   level:
