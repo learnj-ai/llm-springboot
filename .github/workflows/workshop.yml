@@ -4,7 +4,7 @@
     push:
       branches: [main]
       paths:
-        - 'llm-springboot/docs/tutorials/**'
+        - 'docs/tutorials/**'
     workflow_dispatch:
 
   permissions:
@@ -21,7 +21,7 @@
       name: Build tutorial book
       runs-on: ubuntu-latest
       env:
-        TUTORIAL_PATH: llm-springboot/docs/tutorials
+        TUTORIAL_PATH: docs/tutorials
       steps:
         - name: Clone the code
           uses: actions/checkout@v6
