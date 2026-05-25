@@ -40,5 +40,10 @@
   },
   "styles": {
     "website": "styles/website.css"
+  },
+  "links": {
+    "sidebar": {
+      "Slide deck": "slides/overview.html"
+    }
   }
 }
