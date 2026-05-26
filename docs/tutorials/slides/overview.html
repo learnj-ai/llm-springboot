@@ -3,15 +3,18 @@
 <head>
     <meta charset="utf-8">
     <title>LearnJ overview · Slides</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/dracula.css" id="theme">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/base16/dracula.min.css">
     <link rel="stylesheet" href="../gitbook/learnj.css">
     <style>
-        html, body { height: 100%; margin: 0; overflow: hidden; }
+        html, body { height: 100%; margin: 0; }
         .learnj-slideshow-toolbar {
-            position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+            position: fixed; top: 0; left: 0; right: 0; z-index: 100;
             display: flex; align-items: center; justify-content: space-between;
             gap: 1rem; padding: 0.5rem 1rem;
             border-bottom: 1px solid hsl(var(--border));
@@ -25,43 +28,49 @@
         }
         .learnj-slideshow-toolbar a:hover { opacity: 0.8; }
         .learnj-slideshow-hint { font-size: 0.75rem; color: hsl(var(--muted-foreground)); }
-        .remark-visible { top: 2.75rem !important; }
-        .remark-slide-content {
-            font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-            font-size: 28px;
-        }
-        .remark-slide-content h1 { font-size: 2.25em; font-weight: 700; }
-        .remark-slide-content h2 { font-size: 1.35em; font-weight: 600; color: hsl(240 3.8% 46.1%); }
-        .remark-code, .remark-slide-content code {
-            font-family: "JetBrains Mono", ui-monospace, monospace;
-        }
+        .reveal { top: 2.75rem !important; height: calc(100% - 2.75rem) !important; }
+        .reveal .slides { text-align: left; }
+        .reveal .slides section { font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+        .reveal h1, .reveal h2, .reveal h3 { font-family: Inter, ui-sans-serif, system-ui, sans-serif; text-transform: none; }
+        .reveal pre code { font-family: "JetBrains Mono", ui-monospace, monospace; }
+        .reveal .title-slide { text-align: center; }
     </style>
-    <script>
-        (function () {
-            try {
-                var stored = localStorage.getItem("learnj-theme");
-                var prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-                if (stored === "dark" || (!stored && prefersDark)) {
-                    document.documentElement.classList.add("dark");
-                }
-            } catch (e) {}
-        })();
-    </script>
 </head>
-<body class="font-sans antialiased">
-<div class="learnj-slideshow-toolbar">
-    <a href="../index.html">← Back to docs</a>
-    <span class="learnj-slideshow-hint">← → navigate · P presenter · C clone · H help</span>
-</div>
-<script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
-<script>
-    remark.create({
-        sourceUrl: "overview.md",
-        highlightStyle: "github",
-        highlightLanguage: "remark",
-        ratio: "16:9",
-        slideNumberFormat: "%current% / %total%"
-    });
-</script>
+<body>
+    <div class="learnj-slideshow-toolbar">
+        <a href="../index.html">← Back to docs</a>
+        <span class="learnj-slideshow-hint">← → navigate · S speaker · F fullscreen · ? help</span>
+    </div>
+
+    <div class="reveal">
+        <div class="slides">
+            <section
+                data-markdown="overview.md"
+                data-separator="^\n---\n$"
+                data-separator-vertical="^\n--\n$"
+                data-separator-notes="^Note:"
+            ></section>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/markdown/markdown.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/highlight.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/notes/notes.js"></script>
+    <script>
+        Reveal.initialize({
+            hash: true,
+            slideNumber: "c/t",
+            width: 1280,
+            height: 720,
+            margin: 0.08,
+            transition: "slide",
+            backgroundTransition: "fade",
+            plugins: [RevealMarkdown, RevealHighlight, RevealNotes],
+            markdown: {
+                smartypants: true
+            }
+        });
+    </script>
 </body>
 </html>

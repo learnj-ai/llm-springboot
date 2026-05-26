@@ -9,4 +9,5 @@
 * [Document Loader: Feeding the System](06-document-loader.md)
 * [Vector Search Controller: The API Gateway](07-vector-search-controller.md)
 * [Configuration and Models: Wiring Everything Together](08-configuration-models.md)
+* [Solutions to Practice Exercises](Solutions.md)
 * [Conclusion](conclusion.md)

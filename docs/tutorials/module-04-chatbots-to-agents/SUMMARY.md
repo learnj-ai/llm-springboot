@@ -22,6 +22,10 @@
 
 * [Chapter 8: Testing and Production Deployment](chapters/08-testing-deployment.md)
 
+## Solutions
+
+* [Solutions to Practice Exercises](Solutions.md)
+
 ## Conclusion
 
 * [Conclusion and Next Steps](chapters/09-conclusion.md)

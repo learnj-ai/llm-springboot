@@ -9,4 +9,5 @@
 * [RAG Service: The Complete Pipeline](06-rag-service.md)
 * [RAG Controller: Building the API](07-rag-controller.md)
 * [Structured Concurrency: Modern Java Parallelism](08-structured-concurrency.md)
+* [Solutions to Practice Exercises](Solutions.md)
 * [Conclusion](conclusion.md)

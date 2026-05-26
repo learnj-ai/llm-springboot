@@ -17,8 +17,8 @@ Before you begin, ensure you have the following installed:
 1. **Clone the repository** (or navigate to your existing copy):
 
 ```bash
-git clone <repository-url>
-cd llm-springboot-workshop/src/module-01-vector-embeddings
+git clone https://github.com/learnj-ai/llm-springboot.git
+cd src/module-01-vector-embeddings
 ```
 
 2. **Verify project structure**:
@@ -100,7 +100,7 @@ java -jar target/module-01-vector-embeddings-1.0.0-SNAPSHOT.jar
 ```
 
 3. **Watch the startup logs**:
-```
+```shell
 Loading documents and building vector indexes...
 Loaded 3 documents
 Indexed 4 segments using RECURSIVE strategy
@@ -208,7 +208,6 @@ export JAVA_HOME=/path/to/java25
 **Solution**: There is no runtime model download. The `AllMiniLM-L6-v2` ONNX model and its tokenizer are bundled inside the `langchain4j-embeddings-all-minilm-l6-v2` JAR pulled from Maven Central — once Maven resolves the dependency, the model is already on the classpath. If the model fails to load:
 
 - Make sure your `~/.m2/repository/dev/langchain4j/langchain4j-embeddings-all-minilm-l6-v2/<version>/` directory contains a non-empty JAR (re-run `mvn -U dependency:resolve` if it's missing).
-- There is **no** `~/.cache/langchain4j/` directory in play — that path was incorrect in earlier drafts.
 - If you switched LangChain4J versions, run `mvn clean` so an old transitive JAR isn't picked up.
 
 ### Issue: "No documents found at classpath:data/*.md"

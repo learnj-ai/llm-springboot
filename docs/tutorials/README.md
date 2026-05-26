@@ -174,10 +174,19 @@ take the patterns from this workshop to production.
 
 ### API Keys
 You'll need API keys for:
-- **OpenAI**: required for every chat-model module. The workshop default is `gpt-4o-mini`; Module 05 and the Module 06 evaluation judge step up to `gpt-4o`.
+- **OpenAI**: required for every module except module.01. The workshop can run with OpenAI and OpenAI compatible end-points. Ask the workshop instrcutors if you have not recieved an API key. The LLMs are hosted on [Red Hat OpenShift](https://www.redhat.com/en/technologies/cloud-computing/openshift).
+- List of models provided: 
+    - Llama-Guard-3-1B (Chat)
+    - llama-scout-17b (Chat, Functiong calling)
+    - nomic-embed-text-v1-5 (Embedding)
+    - qwen3-14b (Chat, Function calling, Parallel exection, Tool choice)
+
+Alternatively, you can also use your open OpenAI key.
+
 - **Local LLMs (Ollama, etc.)**: not wired in by default. LangChain4J supports them, but the workshop's bean wiring and chapter examples target OpenAI — swap `OpenAiChatModel` for `OllamaChatModel` if you want to run offline.
 
 ### Optional Tools
+The workshop does not require these tools, but if you would like to explore further some recommendations for optional tooling.
 - **PostgreSQL client**: psql, DBeaver, or pgAdmin for database inspection
 - **Redis client**: redis-cli or RedisInsight for cache inspection
 - **Postman/curl**: For API testing
@@ -191,10 +200,10 @@ This workshop uses modern, production-grade technologies:
 |-----------|-----------|---------|
 | **Java** | Java 25 (preview enabled) | Modern runtime: records, virtual threads, structured concurrency (JEP 505 preview) |
 | **Framework** | Spring Boot 4.0 | Application foundation |
-| **LLM Integration** | LangChain4J 1.11 | Java library for LLM applications |
+| **LLM Integration** | LangChain4J | Java library for LLM applications |
 | **Vector Store** | In-memory (workshop) / pgvector (production reference) | Semantic search and embeddings |
 | **Caching** | Redis | Performance optimization |
-| **LLM Provider** | OpenAI (`gpt-4o-mini` default, `gpt-4o` where stronger judgement is needed) | Language models. Ollama and other LangChain4J providers can be swapped in but the workshop ships OpenAI wiring. |
+| **LLM Provider** |  Private AI via Red Hat OpenShift or OpenAI compatible end points |  Llama-Guard-3-1B (Chat), llama-scout-17b (Chat, Functiong calling), nomic-embed-text-v1-5 (Embedding), qwen3-14b (Chat, Function calling, Parallel exection, Tool choice) |
 | **Observability** | OpenTelemetry, Prometheus | Tracing and metrics |
 | **Evaluation** | Dokimos | RAG quality assessment |
 | **Deployment** | Docker, Kubernetes | Containerization and orchestration |
@@ -228,16 +237,16 @@ Each chapter includes:
 
 By completing this workshop, you will be able to:
 
-✅ **Design and implement** production-ready LLM applications with Spring Boot
-✅ **Build semantic search systems** using vector embeddings and similarity algorithms
-✅ **Apply advanced RAG techniques** including hybrid search, query transformation, and re-ranking
-✅ **Integrate external tools** and data sources using the Model Context Protocol
-✅ **Create autonomous agents** using ReAct patterns and multi-agent orchestration
-✅ **Secure LLM applications** with comprehensive guardrails and validation
-✅ **Deploy to production** with monitoring, tracing, evaluation, and Kubernetes
-✅ **Optimize performance** using caching strategies and token management
-✅ **Test LLM applications** with unit, integration, and end-to-end strategies
-✅ **Evaluate RAG quality** using frameworks like Dokimos
+- ✅ **Design and implement** production-ready LLM applications with Spring Boot
+- ✅ **Build semantic search systems** using vector embeddings and similarity algorithms
+- ✅ **Apply advanced RAG techniques** including hybrid search, query transformation, and re-ranking
+- ✅ **Integrate external tools** and data sources using the Model Context Protocol
+- ✅ **Create autonomous agents** using ReAct patterns and multi-agent orchestration
+- ✅ **Secure LLM applications** with comprehensive guardrails and validation
+- ✅ **Deploy to production** with monitoring, tracing, evaluation, and Kubernetes
+- ✅ **Optimize performance** using caching strategies and token management
+- ✅ **Test LLM applications** with unit, integration, and end-to-end strategies
+- ✅ **Evaluate RAG quality** using frameworks like Dokimos
 
 ## Workshop Philosophy
 
