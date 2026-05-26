@@ -2,6 +2,285 @@
 
 This document contains solutions to all practice exercises in Module 06: Enterprise Production.
 
+## How to Run and Test Solutions
+
+### Prerequisites
+- Java 21+
+- Maven 3.9+
+- Docker & Docker Compose (for observability stack)
+- Kubernetes cluster (for deployment exercises) - Minikube or kind for local testing
+
+### Project Location
+```bash
+cd src/module-06-enterprise-production/
+```
+
+### Setup Observability Stack
+```bash
+# Start Jaeger (distributed tracing)
+docker run -d --name jaeger \
+  -p 16686:16686 \
+  -p 4317:4317 \
+  -p 4318:4318 \
+  jaegertracing/all-in-one:latest
+
+# Start Prometheus (metrics)
+docker run -d --name prometheus \
+  -p 9090:9090 \
+  -v $(pwd)/config/prometheus.yml:/etc/prometheus/prometheus.yml \
+  prom/prometheus
+
+# Start Grafana (visualization)
+docker run -d --name grafana \
+  -p 3000:3000 \
+  grafana/grafana
+
+# Or use Docker Compose
+docker-compose up -d
+```
+
+### Configuration
+Update `application.yml` for production features:
+```yaml
+management:
+  tracing:
+    sampling:
+      probability: 1.0
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus,trace
+
+spring:
+  cache:
+    type: caffeine
+    caffeine:
+      spec: maximumSize=1000,expireAfterWrite=1h
+```
+
+### Running the Application
+```bash
+# Development mode
+mvn clean spring-boot:run
+
+# Production mode
+mvn clean package
+java -jar target/module-06-enterprise-production-1.0.0.jar \
+  --spring.profiles.active=prod
+```
+
+### Running Tests
+```bash
+# Run all tests including evaluation tests
+mvn test
+
+# Run evaluation framework tests
+mvn test -Dtest=RagEvaluatorTest
+
+# Run with test reports
+mvn test jacoco:report
+
+# View coverage report
+open target/site/jacoco/index.html
+```
+
+### Testing Evaluation Framework
+```bash
+# Run evaluation on test dataset
+curl -X POST http://localhost:8080/api/v1/eval/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "datasetName": "qa_test_set",
+    "evaluators": ["completeness", "accuracy", "relevance"]
+  }'
+
+# Get evaluation results
+curl http://localhost:8080/api/v1/eval/results/latest
+
+# Compare strategies
+curl -X POST http://localhost:8080/api/v1/eval/compare \
+  -H "Content-Type: application/json" \
+  -d '{
+    "strategies": ["vector-only", "hybrid", "hybrid-reranked"]
+  }'
+```
+
+### Viewing Distributed Traces
+```bash
+# Open Jaeger UI
+open http://localhost:16686
+
+# Search for traces
+# 1. Select service: "rag-service"
+# 2. Look for operation: "rag.full_pipeline"
+# 3. Click on a trace to see the waterfall view
+# 4. Inspect individual spans for timing and attributes
+```
+
+### Monitoring Metrics
+```bash
+# Prometheus metrics endpoint
+curl http://localhost:8080/actuator/prometheus
+
+# Query specific metrics
+curl 'http://localhost:9090/api/v1/query?query=rag_request_total'
+curl 'http://localhost:9090/api/v1/query?query=rag_request_duration_seconds'
+
+# Grafana dashboards
+open http://localhost:3000
+# Default credentials: admin/admin
+# Import dashboard: config/grafana-dashboard.json
+```
+
+### Testing Cache Performance
+```bash
+# First request (cache miss)
+time curl -X POST http://localhost:8080/api/v1/rag/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is vector search?"}'
+
+# Second request (cache hit - should be much faster)
+time curl -X POST http://localhost:8080/api/v1/rag/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is vector search?"}'
+
+# Check cache stats
+curl http://localhost:8080/actuator/metrics/cache.gets
+curl http://localhost:8080/actuator/metrics/cache.puts
+```
+
+### Adding Your Solution Code
+1. **Evaluation framework**: `src/main/java/com/example/production/eval/`
+   - `RagEvaluator.java`
+   - `CompletenessEvaluator.java`
+   - `FactualAccuracyEvaluator.java`
+   - `CompositeEvaluator.java`
+
+2. **Tracing**: `src/main/java/com/example/production/tracing/`
+   - `TracingConfiguration.java`
+   - `TracedRagService.java`
+
+3. **Caching**: `src/main/java/com/example/production/cache/`
+   - `CachedEmbeddingService.java`
+   - `SemanticCacheService.java`
+   - `MultiLevelCacheService.java`
+
+4. **Metrics**: `src/main/java/com/example/production/metrics/`
+   - `RagMetricsInterceptor.java`
+   - `CustomMetrics.java`
+
+### Running Kubernetes Deployment
+```bash
+# Start local Kubernetes (Minikube)
+minikube start
+
+# Build Docker image
+docker build -t rag-service:latest .
+
+# Load image into Minikube
+minikube image load rag-service:latest
+
+# Apply Kubernetes manifests
+kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
+kubectl apply -f k8s/hpa.yaml
+
+# Check deployment
+kubectl get pods -n rag-production
+kubectl logs -f deployment/rag-service -n rag-production
+
+# Test service
+kubectl port-forward svc/rag-service 8080:8080 -n rag-production
+curl http://localhost:8080/actuator/health
+```
+
+### Load Testing
+```bash
+# Install k6 (load testing tool)
+brew install k6  # macOS
+# or download from k6.io
+
+# Run load test
+k6 run scripts/load-test.js
+
+# Expected output shows:
+# - Requests per second
+# - Response times (p95, p99)
+# - Error rate
+# - Throughput
+```
+
+### Continuous Evaluation
+```bash
+# View evaluation history
+curl http://localhost:8080/api/v1/eval/history?days=7
+
+# Trigger manual evaluation
+curl -X POST http://localhost:8080/api/v1/eval/run-now
+
+# Check for quality degradation alerts
+curl http://localhost:8080/api/v1/eval/alerts
+```
+
+### Verifying Production Solutions
+1. **Traces appear in Jaeger**: All RAG requests create spans
+2. **Metrics in Prometheus**: Gauges and counters update in real-time
+3. **Cache improves performance**: Second identical query is 10x+ faster
+4. **Evaluation runs successfully**: Pass rate > 80% on test dataset
+5. **Kubernetes pods are healthy**: All pods in Running state
+6. **HPA scales pods**: Load test triggers autoscaling
+
+### Performance Benchmarks
+```bash
+# Run benchmark suite
+mvn test -Dtest=PerformanceBenchmarkTest
+
+# Expected results:
+# - Cold start (no cache): ~500-1000ms
+# - Warm cache: ~50-100ms
+# - Throughput: 50-100 req/sec (single instance)
+# - P95 latency: < 1000ms
+# - P99 latency: < 2000ms
+```
+
+### Analyzing Evaluation Results
+```bash
+# Generate evaluation report
+curl http://localhost:8080/api/v1/eval/report > evaluation-report.json
+
+# Visualize results
+python scripts/visualize_eval.py evaluation-report.json
+
+# Compare with baseline
+curl -X POST http://localhost:8080/api/v1/eval/compare-baseline \
+  -H "Content-Type: application/json" \
+  -d '{"baselineId": "v1.0", "currentId": "v1.1"}'
+```
+
+### Troubleshooting
+- **No traces in Jaeger**: Check `management.tracing.enabled=true` in config
+- **Metrics not exported**: Verify Prometheus scrapes `actuator/prometheus` endpoint
+- **Cache not working**: Check Caffeine is in classpath, cache configuration is loaded
+- **Evaluation fails**: Ensure test dataset exists, judge model is running
+- **K8s pods crash**: Check logs with `kubectl logs`, verify resource limits
+
+### Production Checklist
+- [ ] Distributed tracing configured and validated
+- [ ] Metrics exported to Prometheus
+- [ ] Caching enabled and tested
+- [ ] Evaluation framework runs hourly
+- [ ] Alerts configured for quality degradation
+- [ ] Kubernetes manifests tested
+- [ ] HPA configured for autoscaling
+- [ ] Load tests pass performance targets
+- [ ] Documentation updated
+
 ---
 
 ## Chapter 2: Dokimos Evaluation Framework - Solutions

@@ -2,6 +2,95 @@
 
 This document contains solutions to all practice exercises in Module 02: Advanced RAG Techniques.
 
+## How to Run and Test Solutions
+
+### Prerequisites
+- Java 21 or later (required for Virtual Threads and Structured Concurrency)
+- Maven 3.9+
+- Ollama installed and running locally (for LLM integration)
+
+### Project Location
+```bash
+cd src/module-02-advanced-rag/
+```
+
+### Setup Ollama
+```bash
+# Install Ollama (if not already installed)
+# macOS/Linux: curl https://ollama.ai/install.sh | sh
+
+# Pull required models
+ollama pull llama3.2
+ollama pull nomic-embed-text
+
+# Verify Ollama is running
+curl http://localhost:11434/api/tags
+```
+
+### Running the Application
+```bash
+# Build and run
+mvn clean spring-boot:run
+
+# The application starts on http://localhost:8080
+```
+
+### Running Tests
+```bash
+# Run all tests
+mvn test
+
+# Run specific test class
+mvn test -Dtest=HybridSearchServiceTest
+
+# Run with verbose output
+mvn test -X
+```
+
+### Testing RAG Endpoints
+```bash
+# Test basic RAG query
+curl -X POST http://localhost:8080/api/v1/rag/ask \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "How do I configure authentication?",
+    "limit": 10
+  }'
+
+# Test hybrid search
+curl -X POST http://localhost:8080/api/v1/search/hybrid \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "password reset",
+    "vectorWeight": 0.6,
+    "keywordWeight": 0.4,
+    "limit": 5
+  }'
+```
+
+### Adding Your Solution Code
+1. **Service layer**: `src/main/java/com/example/advancedrag/service/`
+   - `QueryTransformationService.java`
+   - `HybridSearchService.java`
+   - `ReRankingService.java`
+   - `RagService.java`
+
+2. **Controller layer**: `src/main/java/com/example/advancedrag/controller/`
+   - `RagController.java`
+
+3. **Tests**: `src/test/java/com/example/advancedrag/`
+
+### Verifying Solutions
+1. **Check logs**: Watch for query transformations and retrieval results
+2. **Test endpoints**: Verify JSON responses contain expected fields
+3. **Verify retrieval**: Confirm that relevant documents are returned
+4. **Check answer quality**: RAG responses should be grounded in retrieved context
+
+### Troubleshooting
+- **Ollama connection fails**: Ensure Ollama is running (`ollama serve`)
+- **No results returned**: Check that documents are loaded at startup
+- **Slow responses**: Normal for first request (model loading), subsequent requests faster
+
 ---
 
 ## Chapter 2: Query Transformation - Solutions
