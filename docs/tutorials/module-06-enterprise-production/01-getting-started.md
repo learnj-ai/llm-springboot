@@ -19,8 +19,8 @@ Before you begin, ensure you have the following installed:
 1. **Clone the repository** (or navigate to your existing copy):
 
 ```bash
-git clone <repository-url>
-cd llm-springboot-workshop/src/module-06-enterprise-production
+git clone https://github.com/learnj-ai/llm-springboot.git
+cd src/module-06-enterprise-production
 ```
 
 2. **Verify project structure**:
