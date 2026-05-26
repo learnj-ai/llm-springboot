@@ -10,4 +10,5 @@
 * [Token Optimization: Reducing Costs and Latency](07-token-optimization.md)
 * [Kubernetes Deployment: Scaling to Production](08-kubernetes-deployment.md)
 * [Appendix: Migrating to pgvector](09-pgvector-migration.md)
+* [Solutions to Practice Exercises](Solutions.md)
 * [Conclusion](conclusion.md)

@@ -9,4 +9,5 @@
 * [REST Controller: The API Gateway](06-rest-controller.md)
 * [Testing Tools and Orchestration](07-testing.md)
 * [Real MCP: Connecting to an External Tool Server](09-real-mcp.md)
+* [Solutions to Practice Exercises](Solutions.md)
 * [Conclusion](conclusion.md)
