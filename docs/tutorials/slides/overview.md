@@ -1,10 +1,10 @@
 <!-- .slide: class="title-slide" -->
 
-# Building Production-Ready LLM Applications with Spring Boot
+## Building Production-Ready LLM Applications with Spring Boot
 
-## Architecting Intelligent Enterprise Systems
+#### Architecting Intelligent Enterprise Systems
 
-### From Vector Embeddings to Production Deployment
+        From Vector Embeddings to Production Deployment
 
 ---
 
