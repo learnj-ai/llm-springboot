@@ -2,6 +2,146 @@
 
 This document contains solutions to all practice exercises in Module 04: From Chatbots to Agents.
 
+## How to Run and Test Solutions
+
+### Prerequisites
+- Java 21+ (for Virtual Threads)
+- Maven 3.9+
+- Ollama with llama3.2 model
+- Understanding of the ReAct pattern
+
+### Project Location
+```bash
+cd src/module-04-chatbots-to-agents/
+```
+
+### Setup
+```bash
+# Ensure Ollama is running
+ollama serve
+
+# Pull the model
+ollama pull llama3.2
+
+# Verify
+ollama list
+```
+
+### Running the Application
+```bash
+mvn clean spring-boot:run
+
+# Application starts on http://localhost:8080
+```
+
+### Running Tests
+```bash
+# Run all tests
+mvn test
+
+# Run specific agent tests
+mvn test -Dtest=ReactAgentTest
+mvn test -Dtest=ResearchAgentTest
+
+# Run with debug logging
+mvn test -Dlogging.level.com.example.agents=DEBUG
+```
+
+### Testing Agent Endpoints
+```bash
+# Test ReAct agent
+curl -X POST http://localhost:8080/api/v1/agent/process \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What is the weather in London and New York?",
+    "maxIterations": 5
+  }'
+
+# Test research agent
+curl -X POST http://localhost:8080/api/v1/agent/research \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "vector databases",
+    "depth": "comprehensive"
+  }'
+
+# Get thought history
+curl http://localhost:8080/api/v1/agent/thoughts/{sessionId}
+```
+
+### Adding Your Solution Code
+1. **Base agents**: `src/main/java/com/example/agents/`
+   - `BaseAgent.java` - Abstract base class
+   - `ReactAgent.java` - ReAct implementation
+
+2. **Specialized agents**: `src/main/java/com/example/agents/specialized/`
+   - `ResearchAgent.java`
+   - `CodeReviewAgent.java`
+   - `DataAnalystAgent.java`
+
+3. **Tools integration**: `src/main/java/com/example/agents/tools/`
+   - `CalculatorTool.java`
+   - `FileSearchTool.java`
+   - `WebScraperTool.java`
+
+4. **Memory system**: `src/main/java/com/example/agents/memory/`
+   - `ConversationMemory.java`
+   - `SlidingWindowMemory.java`
+   - `SummaryBasedMemory.java`
+
+### Observing Agent Behavior
+Watch the logs to see the ReAct loop in action:
+```bash
+# Enable debug logging in application.yml
+logging:
+  level:
+    com.example.agents: DEBUG
+
+# You'll see output like:
+# Thought: I need to check the weather in both cities
+# Action: get_weather(city="London")
+# Observation: Temperature is 15°C, cloudy
+# Thought: Now I'll check New York
+# Action: get_weather(city="New York")
+# Observation: Temperature is 22°C, sunny
+# Answer: London is 15°C and cloudy, New York is 22°C and sunny
+```
+
+### Verifying Solutions
+1. **ReAct loop executes**: Check logs show Thought → Action → Observation cycles
+2. **Tools are called**: Verify correct tools are selected for each task
+3. **Memory persists**: Conversation history is maintained across messages
+4. **Self-correction works**: Agent retries when a tool fails
+5. **Final answer is accurate**: Response addresses the original query
+
+### Testing Multi-Agent Orchestration
+```bash
+# Test complex task requiring multiple agents
+curl -X POST http://localhost:8080/api/v1/agent/complex \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task": "Research vector databases and create a comparison table",
+    "requiredAgents": ["research", "data_analyst"]
+  }'
+```
+
+### Troubleshooting
+- **Agent loops forever**: Check maxIterations setting, verify action detection
+- **Wrong tool selected**: Improve tool descriptions or add examples
+- **Memory fills up**: Implement sliding window or summarization
+- **Slow responses**: First LLM call loads model, subsequent calls faster
+
+### Advanced: Custom Agents
+To create your own specialized agent:
+```bash
+# 1. Create new agent class extending BaseAgent
+# 2. Implement specific behavior in process() method
+# 3. Register agent in AgentCollaborationFramework
+# 4. Add configuration in application.yml
+# 5. Create tests
+# 6. Test via endpoint
+```
+
 ---
 
 ## Chapter 2: Understanding the ReAct Pattern - Solutions

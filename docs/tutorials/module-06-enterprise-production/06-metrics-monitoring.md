@@ -150,7 +150,7 @@ Start the application and visit: http://localhost:8086/actuator/prometheus
 
 **Example output**:
 
-```prometheus
+```promql
 # HELP rag_queries_total Total number of RAG queries processed
 # TYPE rag_queries_total counter
 rag_queries_total{type="rag"} 523.0

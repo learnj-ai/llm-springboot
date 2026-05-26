@@ -2,6 +2,126 @@
 
 This document contains solutions to all practice exercises in Module 03: Tools and Model Context Protocol.
 
+## How to Run and Test Solutions
+
+### Prerequisites
+- Java 21+
+- Maven 3.9+
+- PostgreSQL database (for database tools)
+- Weather API key (for weather tool exercises)
+
+### Project Location
+```bash
+cd src/module-03-tools-mcp/
+```
+
+### Database Setup
+```bash
+# Start PostgreSQL with Docker
+docker run --name postgres-mcp \
+  -e POSTGRES_PASSWORD=password \
+  -e POSTGRES_DB=toolsdb \
+  -p 5432:5432 \
+  -d postgres:15
+
+# Create test table
+docker exec -it postgres-mcp psql -U postgres -d toolsdb -c \
+  "CREATE TABLE users (id SERIAL PRIMARY KEY, name VARCHAR(100), email VARCHAR(100));"
+
+# Insert test data
+docker exec -it postgres-mcp psql -U postgres -d toolsdb -c \
+  "INSERT INTO users (name, email) VALUES ('John Doe', 'john@example.com');"
+```
+
+### Configuration
+Update `src/main/resources/application.yml`:
+```yaml
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/toolsdb
+    username: postgres
+    password: password
+
+weather:
+  api:
+    key: YOUR_API_KEY_HERE  # Get from openweathermap.org
+```
+
+### Running the Application
+```bash
+mvn clean spring-boot:run
+```
+
+### Running Tests
+```bash
+# Run all tests
+mvn test
+
+# Run with Testcontainers (automatically starts PostgreSQL)
+mvn test -Dtest=DatabaseQueryToolTest
+
+# Run integration tests
+mvn verify
+```
+
+### Testing Tool Endpoints
+```bash
+# Execute a database query
+curl -X POST http://localhost:8080/api/v1/tools/execute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "SELECT * FROM users LIMIT 10"
+  }'
+
+# Get weather information
+curl -X POST http://localhost:8080/api/v1/tools/execute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What is the weather in London?"
+  }'
+
+# List available tools
+curl http://localhost:8080/api/v1/tools/list
+```
+
+### Adding Your Solution Code
+1. **Tool implementations**: `src/main/java/com/example/toolsmcp/tools/`
+   - `DatabaseQueryTool.java`
+   - `WeatherApiTool.java`
+   - Custom tools you create
+
+2. **MCP configuration**: `src/main/java/com/example/toolsmcp/config/`
+   - `McpServerConfiguration.java`
+
+3. **Orchestrator**: `src/main/java/com/example/toolsmcp/service/`
+   - `ToolOrchestrator.java`
+
+4. **Controller**: `src/main/java/com/example/toolsmcp/controller/`
+   - `ToolController.java`
+
+### Verifying Solutions
+1. **Tool registration**: Check logs for "Registered tool: tool_name"
+2. **Database queries**: Verify safe queries execute, dangerous ones are blocked
+3. **API calls**: Weather tool returns valid temperature data
+4. **Error handling**: Invalid inputs return proper error messages
+
+### Security Testing
+```bash
+# This should be REJECTED (dangerous query)
+curl -X POST http://localhost:8080/api/v1/tools/execute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "DROP TABLE users"
+  }'
+
+# Expected response: {"error": "Query contains forbidden keyword: DROP"}
+```
+
+### Troubleshooting
+- **Database connection fails**: Verify PostgreSQL is running and credentials are correct
+- **Weather API errors**: Check API key is valid and has quota remaining
+- **Tool not found**: Ensure tool is registered in `McpServerConfiguration`
+
 ---
 
 ## Chapter 2: Database Tools - Solutions

@@ -2,6 +2,84 @@
 
 This document contains solutions to all practice exercises in Module 01: Vector Embeddings and Semantic Search.
 
+## How to Run and Test Solutions
+
+### Prerequisites
+- Java 21 or later
+- Maven 3.9+
+- Your favorite IDE (IntelliJ IDEA, VS Code, Eclipse)
+
+### Project Location
+All code for this module is in:
+```bash
+cd src/module-01-vector-embeddings/
+```
+
+### Running the Application
+```bash
+# Build and run
+mvn clean spring-boot:run
+
+# Or build first, then run
+mvn clean package
+java -jar target/module-01-vector-embeddings-1.0.0.jar
+```
+
+The application starts on `http://localhost:8080`
+
+### Running Tests
+```bash
+# Run all tests
+mvn test
+
+# Run a specific test class
+mvn test -Dtest=EmbeddingServiceTest
+
+# Run a specific test method
+mvn test -Dtest=EmbeddingServiceTest#similarTextsShouldHaveHighSimilarity
+```
+
+### Testing Endpoints
+Use curl, Postman, or any HTTP client:
+
+```bash
+# Test vector search
+curl -X POST http://localhost:8080/api/v1/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "how do I reset my password",
+    "limit": 5,
+    "strategy": "cosine"
+  }'
+
+# Test similarity endpoint (after implementing Exercise 3)
+curl -X POST http://localhost:8080/api/v1/similarity \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text1": "reset my password",
+    "text2": "change my password"
+  }'
+```
+
+### Adding Your Solution Code
+1. **Modify existing files**: Most exercises ask you to add methods to existing service classes
+   - Location: `src/main/java/com/example/vectorsearch/service/`
+   - Example: Add `similarity()` method to `EmbeddingService.java`
+
+2. **Add test files**: Create new test classes or add to existing ones
+   - Location: `src/test/java/com/example/vectorsearch/service/`
+   - Example: `EmbeddingServiceTest.java`
+
+3. **Add new controllers**: For exercises that add endpoints
+   - Location: `src/main/java/com/example/vectorsearch/controller/`
+   - Example: `SimilarityController.java`
+
+### Verifying Your Solutions
+1. **Build succeeds**: `mvn clean package` should complete without errors
+2. **Tests pass**: `mvn test` should show all tests passing
+3. **Application starts**: No exceptions when running `mvn spring-boot:run`
+4. **Endpoints respond**: curl commands return expected JSON responses
+
 ---
 
 ## Chapter 2: Embedding Service - Solutions
