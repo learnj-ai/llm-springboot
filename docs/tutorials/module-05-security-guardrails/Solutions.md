@@ -7,7 +7,8 @@ This document contains solutions to all practice exercises in Module 05: Securit
 ### Prerequisites
 - Java 21+
 - Maven 3.9+
-- Ollama with llama3.2 (for main LLM) and gemma (for guardrails)
+- OpenAI API key (or compatible API)
+- Docker & Docker Compose
 - Understanding of security concepts: prompt injection, PII, output validation
 
 ### Project Location
@@ -15,28 +16,34 @@ This document contains solutions to all practice exercises in Module 05: Securit
 cd src/module-05-security-guardrails/
 ```
 
-### Setup Dual LLM Configuration
+### Setup
 ```bash
-# Pull both models
-ollama pull llama3.2    # Main LLM
-ollama pull gemma:2b    # Lightweight guardrail model
+# 1. Set environment variables
+export OPENAI_API_KEY=your-api-key-here
+export OPENAI_MODEL_NAME=gpt-4o-mini
 
-# Verify both are available
-ollama list
+# 2. Start infrastructure services
+docker compose up -d
+
+# This starts:
+# - Redis (port 6379) - for caching and audit logs
+
+# 3. Verify services
+docker ps
 ```
 
 ### Configuration
-Check `application.yml` for dual-model setup:
+The application uses OpenAI-compatible APIs:
 ```yaml
-llm:
-  main:
-    model: llama3.2
-    base-url: http://localhost:11434
-  
-  guardrail:
-    model: gemma:2b
-    base-url: http://localhost:11434
+# application.yml
+langchain4j:
+  open-ai:
+    api-key: ${OPENAI_API_KEY:demo}
+    model-name: ${OPENAI_MODEL_NAME:gpt-4}
+    api-base: ${OPENAI_API_BASE:https://api.openai.com/}
 ```
+
+**Note**: For production, you can use the same model for both main LLM and guardrail checks, or configure separate models for cost optimization.
 
 ### Running the Application
 ```bash
@@ -178,9 +185,10 @@ curl http://localhost:8080/api/v1/security/metrics
 ```
 
 ### Troubleshooting
-- **All requests blocked**: Check guardrail model is running, not too sensitive
+- **API key errors**: Verify `OPENAI_API_KEY` is set correctly
+- **All requests blocked**: Check guardrail thresholds aren't too sensitive
 - **PII not detected**: Verify regex patterns match your data format
-- **Slow responses**: Dual-model setup requires more resources, consider caching
+- **Slow responses**: Consider implementing caching for repeated validations
 - **False positives**: Tune detection thresholds in configuration
 
 ### Advanced: Custom Guardrails

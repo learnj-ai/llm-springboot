@@ -7,24 +7,30 @@ This document contains solutions to all practice exercises in Module 02: Advance
 ### Prerequisites
 - Java 21 or later (required for Virtual Threads and Structured Concurrency)
 - Maven 3.9+
-- Ollama installed and running locally (for LLM integration)
+- OpenAI API key (or compatible API like Azure OpenAI)
+- Docker & Docker Compose (for infrastructure services)
 
 ### Project Location
 ```bash
 cd src/module-02-advanced-rag/
 ```
 
-### Setup Ollama
+### Setup API Keys and Infrastructure
 ```bash
-# Install Ollama (if not already installed)
-# macOS/Linux: curl https://ollama.ai/install.sh | sh
+# 1. Set environment variables for OpenAI API
+export OPENAI_API_KEY=your-api-key-here
+export OPENAI_MODEL_NAME=gpt-4o-mini
+# export OPENAI_API_BASE=https://api.openai.com/  # Optional: for custom endpoints
 
-# Pull required models
-ollama pull llama3.2
-ollama pull nomic-embed-text
+# 2. Start infrastructure services
+docker compose up -d
 
-# Verify Ollama is running
-curl http://localhost:11434/api/tags
+# This starts:
+# - ChromaDB (port 8000) - vector database
+# - Redis (port 6379) - caching
+
+# Verify services are running
+docker ps
 ```
 
 ### Running the Application
@@ -32,7 +38,7 @@ curl http://localhost:11434/api/tags
 # Build and run
 mvn clean spring-boot:run
 
-# The application starts on http://localhost:8080
+# The application starts on http://localhost:8082
 ```
 
 ### Running Tests
@@ -47,918 +53,908 @@ mvn test -Dtest=HybridSearchServiceTest
 mvn test -X
 ```
 
-### Testing RAG Endpoints
-```bash
-# Test basic RAG query
-curl -X POST http://localhost:8080/api/v1/rag/ask \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "How do I configure authentication?",
-    "limit": 10
-  }'
-
-# Test hybrid search
-curl -X POST http://localhost:8080/api/v1/search/hybrid \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "password reset",
-    "vectorWeight": 0.6,
-    "keywordWeight": 0.4,
-    "limit": 5
-  }'
-```
-
-### Adding Your Solution Code
-1. **Service layer**: `src/main/java/com/example/advancedrag/service/`
-   - `QueryTransformationService.java`
-   - `HybridSearchService.java`
-   - `ReRankingService.java`
-   - `RagService.java`
-
-2. **Controller layer**: `src/main/java/com/example/advancedrag/controller/`
-   - `RagController.java`
-
-3. **Tests**: `src/test/java/com/example/advancedrag/`
-
-### Verifying Solutions
-1. **Check logs**: Watch for query transformations and retrieval results
-2. **Test endpoints**: Verify JSON responses contain expected fields
-3. **Verify retrieval**: Confirm that relevant documents are returned
-4. **Check answer quality**: RAG responses should be grounded in retrieved context
-
-### Troubleshooting
-- **Ollama connection fails**: Ensure Ollama is running (`ollama serve`)
-- **No results returned**: Check that documents are loaded at startup
-- **Slow responses**: Normal for first request (model loading), subsequent requests faster
-
 ---
 
 ## Chapter 2: Query Transformation - Solutions
 
-### Exercise 1: Implement multi-query generation
+### Exercise 1: Analyze Multi-Query Variants
+
+**Task:** Submit queries and examine the generated variants in the logs.
 
 **Solution:**
 
+```bash
+curl -X POST http://localhost:8082/api/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "VPN troubleshooting", "useQueryExpansion": true}'
+```
+
+**What to look for in the logs:**
+
+The pipeline log will show a section like:
+```
+╠══ Step 1: Query Transformation (1431ms, parallel) ═════════════════
+║ Original: VPN troubleshooting
+║ Alt[1]:   How to fix VPN issues
+║ Alt[2]:   Solutions for VPN connectivity problems
+║ Alt[3]:   Troubleshoot and resolve VPN issues
+║ HyDE:     When troubleshooting VPN issues, it's essential to first identify...
+```
+
+**Analysis:**
+
+1. **Do they capture different aspects?**
+   - Yes. Alt[1] is action-oriented ("fix"), Alt[2] focuses on "connectivity problems", Alt[3] pairs "troubleshoot" with "resolve"
+   - Each uses different keywords that might match different documents
+
+2. **Are any variants near-duplicates?**
+   - Alt[1] and Alt[3] both use "issues" but otherwise differ
+   - Near-duplicates are filtered by `sanitizeAlternatives()` which deduplicates case-insensitively
+
+3. **How to improve the multi-query prompt?**
+   
+   Modify `QueryTransformer.java`:
+   ```java
+   private String buildMultiQueryPrompt(String originalQuery) {
+       return """
+               You are an AI assistant helping to improve search results.
+               Given the user query, generate 3 alternative phrasings that capture
+               different aspects or perspectives of the same information need.
+               
+               Guidelines:
+               - Use different keywords and synonyms
+               - Vary the sentence structure (question, statement, command)
+               - Focus on different aspects (technical, procedural, troubleshooting)
+               
+               Original query: %s
+               
+               Return only the 3 alternative queries, one per line. Do not number them.
+               """.formatted(originalQuery);
+   }
+   ```
+
+**Key takeaway:** Multi-query expansion works best when variants genuinely capture different vocabulary and perspectives, not just minor rewordings.
+
+---
+
+### Exercise 2: Compare With and Without HyDE
+
+**Task:** Test the same question twice—once with HyDE, once without.
+
+**Solution:**
+
+**Step 1: Test with HyDE (standard behavior):**
+```bash
+curl -X POST http://localhost:8082/api/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How do I report a security incident?", "useQueryExpansion": true}'
+```
+
+Save the response, noting the `sources` array and which documents were retrieved.
+
+**Step 2: Temporarily disable HyDE in `RAGService.java`:**
+
 ```java
-@Service
-public class QueryTransformationService {
+// In RAGService.java, around line 190-195
+Subtask<List<ScoredSegment>> hydeTask = null;
+boolean fireHyde = false; // CHANGED: was: useQueryExpansion && shouldUseHyde(...)
+if (fireHyde) {
+    final String hyde = hypotheticalDocument;
+    hydeTask = scope.fork(() -> safeVectorOnlySearch(hyde, DEFAULT_TOP_K));
+}
+```
+
+**Step 3: Rebuild and test again:**
+```bash
+mvn clean spring-boot:run
+
+curl -X POST http://localhost:8082/api/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How do I report a security incident?", "useQueryExpansion": true}'
+```
+
+**Analysis:**
+
+Compare the two responses:
+
+1. **Does HyDE improve retrieved segments?**
+   - Check if any sources in the WITH-HyDE response have `sourceQuery` containing `"vector(HyDE)"`
+   - These are documents that HyDE found but multi-query didn't
+
+2. **Check the logs:**
+   - Look for the line: `║ vector(HyDE): 'When troubleshooting VPN issues...' → 5 results`
+   - Compare which chunks came from HyDE vs. multi-query variants
+
+3. **For what types of questions does HyDE help most?**
+   - **Short, vague queries** ("VPN troubleshooting") - HyDE expands them into detailed paragraphs
+   - **Question-answer vocabulary gap** - HyDE generates answer-like text that matches real documents better
+   - **Less helpful for**: Already-detailed questions or exact-term lookups
+
+**Recommendation:** Keep HyDE enabled for general Q&A systems, but consider skipping it for very short queries, already well-phrased questions, or latency-critical applications.
+
+---
+
+### Exercise 3: Prompt Engineering - Generate 5 Variants
+
+**Task:** Modify the multi-query prompt to generate 5 variants instead of 3.
+
+**Solution:**
+
+Modify `QueryTransformer.java`:
+
+```java
+public class QueryTransformer {
     
-    private final ChatLanguageModel chatModel;
-    
-    public List<String> generateMultipleQueries(String originalQuery, int count) {
-        String prompt = String.format("""
-            Given the user query: "%s"
-            
-            Generate %d alternative phrasings of this query that maintain the same intent.
-            Each alternative should use different words and sentence structure.
-            
-            Return only the alternative queries, one per line.
-            """, originalQuery, count);
-        
-        String response = chatModel.generate(prompt);
-        
-        return Arrays.stream(response.split("\n"))
-            .map(String::trim)
-            .filter(s -> !s.isEmpty())
-            .limit(count)
-            .toList();
+    private static final Logger log = LoggerFactory.getLogger(QueryTransformer.class);
+    private static final int ALTERNATIVE_QUERY_COUNT = 5;  // CHANGED: was 3
+
+    // ... existing code ...
+
+    private String buildMultiQueryPrompt(String originalQuery) {
+        return """
+                You are an AI assistant helping to improve search results.
+                Given the user query, generate 5 alternative phrasings that capture
+                different aspects or perspectives of the same information need.
+
+                Original query: %s
+
+                Return only the 5 alternative queries, one per line. Do not number them.
+                """.formatted(originalQuery);
     }
 }
 ```
 
-### Exercise 2: Test query transformation
+**Test it:**
+```bash
+mvn clean spring-boot:run
 
-**Solution:**
-
-```java
-@Test
-void shouldGenerateMultipleQueries() {
-    List<String> queries = queryTransformationService
-        .generateMultipleQueries("How do I reset my password?", 3);
-    
-    assertThat(queries).hasSize(3);
-    assertThat(queries).allMatch(q -> q.length() > 5);
-    assertThat(queries).doesNotContain("How do I reset my password?");
-}
-
-@Test
-void shouldMaintainQueryIntent() {
-    List<String> queries = queryTransformationService
-        .generateMultipleQueries("password reset", 2);
-    
-    assertThat(queries).allMatch(q -> 
-        q.toLowerCase().contains("password") || 
-        q.toLowerCase().contains("credential")
-    );
-}
+curl -X POST http://localhost:8082/api/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "password reset process", "useQueryExpansion": true}'
 ```
 
-### Exercise 3 (Bonus): Implement query decomposition
+**Analysis:**
 
-**Solution:**
+1. **Do 5 variants provide better recall than 3?**
+   - More variants = more keyword diversity = higher chance of finding relevant docs
+   - But diminishing returns after 3-4 variants
 
-```java
-public List<String> decompose Query(String complexQuery) {
-    String prompt = String.format("""
-        Break down this complex query into simpler sub-queries:
-        "%s"
-        
-        Each sub-query should be independently answerable.
-        Return one sub-query per line.
-        """, complexQuery);
-    
-    String response = chatModel.generate(prompt);
-    
-    return Arrays.stream(response.split("\n"))
-        .map(String::trim)
-        .filter(s -> !s.isEmpty())
-        .toList();
-}
+2. **Are variants 4-5 near-duplicates?**
+   - Likely yes. The LLM may struggle to generate truly distinct alternatives beyond 3-4
 
-@Test
-void shouldDecomposeComplexQuery() {
-    String complex = "What are the authentication methods and how do I configure rate limiting?";
-    List<String> subQueries = queryTransformationService.decomposeQuery(complex);
-    
-    assertThat(subQueries).hasSizeGreaterThanOrEqualTo(2);
-    assertThat(subQueries).anyMatch(q -> q.toLowerCase().contains("authentication"));
-    assertThat(subQueries).anyMatch(q -> q.toLowerCase().contains("rate limiting"));
-}
-```
+3. **Latency impact:**
+   - Stage 1 should show similar time since multi-query is one LLM call
+   - Stage 2 will increase: 5 variants + original + HyDE = 7 searches instead of 5
+   - Expect ~20-30% increase in total latency
 
-### Exercise 4 (Challenge): Query expansion with synonyms
-
-**Solution:**
-
-```java
-public List<String> expandWithSynonyms(String query) {
-    String prompt = String.format("""
-        Expand this query with synonyms and related terms:
-        "%s"
-        
-        Generate 3 expanded versions that include:
-        - Technical synonyms
-        - Related concepts
-        - Alternative terminology
-        
-        Return one expanded query per line.
-        """, query);
-    
-    String response = chatModel.generate(prompt);
-    
-    return Arrays.stream(response.split("\n"))
-        .map(String::trim)
-        .filter(s -> !s.isEmpty())
-        .toList();
-}
-```
+**Recommendation:** 3 variants is the sweet spot. More than 4 often produces duplicates without improving results.
 
 ---
 
 ## Chapter 3: Keyword Search Service - Solutions
 
-### Exercise 1: Implement TF-IDF scoring
+### Exercise 1: Compare Search Methods
+
+**Task:** Use the `/compare` endpoint to see when keyword search outperforms vector search.
 
 **Solution:**
 
+**Test 1: Exact term query (keyword should win):**
+```bash
+curl -X POST http://localhost:8082/api/v1/rag/compare \
+  -H "Content-Type: application/json" \
+  -d '{"query": "SEV1 incident", "topK": 5}'
+```
+
+**Expected result:**
+- `keywordResults` should rank documents containing "SEV1" at the top
+- `vectorResults` might miss "SEV1" or rank it lower
+- `hybridResults` should combine both
+
+**Test 2: Semantic query (vector should win):**
+```bash
+curl -X POST http://localhost:8082/api/v1/rag/compare \
+  -H "Content-Type: application/json" \
+  -d '{"query": "emergency situation", "topK": 5}'
+```
+
+**Expected result:**
+- `vectorResults` should find documents about incidents, critical issues, SEV1
+- `keywordResults` might return nothing if no docs contain exact words
+- `hybridResults` should favor vector results
+
+**Key insight:** Hybrid search provides robustness—it performs well across diverse query types.
+
+---
+
+### Exercise 2: BM25 Parameter Tuning
+
+**Task:** Modify BM25 parameters and observe the impact.
+
+**Solution:**
+
+Modify `KeywordSearchService.java`:
+
 ```java
-public class TfIdfCalculator {
-    
-    public double calculateTF(String term, List<String> document) {
-        long termCount = document.stream()
-            .filter(word -> word.equalsIgnoreCase(term))
-            .count();
-        
-        return (double) termCount / document.size();
-    }
-    
-    public double calculateIDF(String term, List<List<String>> corpus) {
-        long docsWithTerm = corpus.stream()
-            .filter(doc -> doc.stream()
-                .anyMatch(word -> word.equalsIgnoreCase(term)))
-            .count();
-        
-        return Math.log((double) corpus.size() / (1 + docsWithTerm));
-    }
-    
-    public double calculateTfIdf(String term, List<String> document, 
-                                 List<List<String>> corpus) {
-        return calculateTF(term, document) * calculateIDF(term, corpus);
-    }
+@Service
+public class KeywordSearchService {
+
+    private static final double BM25_K1 = 2.0;  // CHANGED: was 1.2
+    private static final double BM25_B = 0.5;   // CHANGED: was 0.75
+
+    // ... rest of the code ...
 }
 ```
 
-### Exercise 2: Test BM25 implementation
+**Test:**
+```bash
+mvn clean spring-boot:run
 
-**Solution:**
-
-```java
-@Test
-void bm25ShouldRankRelevantDocsHigher() {
-    KeywordSearchService service = new KeywordSearchService();
-    
-    // Index documents
-    service.indexDocument("doc1", "Java Spring Boot tutorial");
-    service.indexDocument("doc2", "Python machine learning");
-    service.indexDocument("doc3", "Java Spring framework guide");
-    
-    List<SearchResult> results = service.search("Java Spring", 10);
-    
-    assertThat(results).isNotEmpty();
-    assertThat(results.get(0).documentId()).isIn("doc1", "doc3");
-}
-
-@Test
-void bm25ShouldHandleTermFrequency() {
-    KeywordSearchService service = new KeywordSearchService();
-    
-    service.indexDocument("doc1", "Java Java Java Spring");
-    service.indexDocument("doc2", "Java Spring Boot");
-    
-    List<SearchResult> results = service.search("Java", 10);
-    
-    // doc1 should rank higher due to higher term frequency
-    assertThat(results.get(0).documentId()).isEqualTo("doc1");
-}
+curl -X POST http://localhost:8082/api/v1/rag/compare \
+  -H "Content-Type: application/json" \
+  -d '{"query": "password reset", "topK": 5}'
 ```
 
-### Exercise 3 (Bonus): Implement phrase search
+**Understanding the parameters:**
+
+**`k1` (term frequency saturation):**
+- Lower k1: Term frequency saturates quickly
+- Higher k1: Term frequency matters more
+
+**`b` (document length normalization):**
+- Lower b: Less penalty for long documents
+- Higher b: More penalty for long documents
+
+**Recommendation:** Stick with standard BM25 parameters (`k1=1.2, b=0.75`) unless you have a specific corpus characteristic to optimize for.
+
+---
+
+### Exercise 3: Add Stopword Filtering
+
+**Task:** Implement stopword removal to improve precision.
 
 **Solution:**
 
-```java
-public List<SearchResult> phraseSearch(String phrase, int limit) {
-    String[] terms = phrase.toLowerCase().split("\\s+");
-    
-    return documents.entrySet().stream()
-        .filter(entry -> containsPhrase(entry.getValue(), terms))
-        .map(entry -> new SearchResult(
-            entry.getKey(),
-            calculatePhraseScore(entry.getValue(), terms)
-        ))
-        .sorted(Comparator.comparingDouble(SearchResult::score).reversed())
-        .limit(limit)
-        .toList();
-}
+Modify `KeywordSearchService.java`:
 
-private boolean containsPhrase(String document, String[] terms) {
-    String[] words = document.toLowerCase().split("\\s+");
+```java
+@Service
+public class KeywordSearchService {
+
+    private static final double BM25_K1 = 1.2;
+    private static final double BM25_B = 0.75;
     
-    for (int i = 0; i <= words.length - terms.length; i++) {
-        boolean match = true;
-        for (int j = 0; j < terms.length; j++) {
-            if (!words[i + j].equals(terms[j])) {
-                match = false;
-                break;
+    // Add stopwords set
+    private static final Set<String> STOPWORDS = Set.of(
+        "the", "and", "or", "but", "is", "are", "was", "were",
+        "in", "on", "at", "to", "for", "of", "a", "an",
+        "how", "do", "does", "i", "my", "your", "this", "that"
+    );
+
+    // ... existing code ...
+
+    // Modify the tokenization methods
+    private static Set<String> uniqueTokens(String text) {
+        Set<String> set = new HashSet<>();
+        for (String token : text.toLowerCase().split("\\W+")) {
+            if (!token.isEmpty() && token.length() > 1 && !STOPWORDS.contains(token)) {
+                set.add(token);
             }
         }
-        if (match) return true;
+        return set;
     }
-    return false;
-}
-```
 
-### Exercise 4 (Challenge): N-gram indexing
-
-**Solution:**
-
-```java
-public class NgramIndexer {
-    
-    private final Map<String, Set<String>> ngramIndex = new HashMap<>();
-    
-    public void indexDocument(String docId, String text, int n) {
-        List<String> ngrams = generateNgrams(text, n);
-        
-        for (String ngram : ngrams) {
-            ngramIndex.computeIfAbsent(ngram, k -> new HashSet<>()).add(docId);
-        }
-    }
-    
-    private List<String> generateNgrams(String text, int n) {
-        String[] words = text.toLowerCase().split("\\s+");
-        List<String> ngrams = new ArrayList<>();
-        
-        for (int i = 0; i <= words.length - n; i++) {
-            StringBuilder ngram = new StringBuilder();
-            for (int j = 0; j < n; j++) {
-                if (j > 0) ngram.append(" ");
-                ngram.append(words[i + j]);
+    private static List<String> allTokens(String text) {
+        List<String> list = new ArrayList<>();
+        for (String token : text.toLowerCase().split("\\W+")) {
+            if (!token.isEmpty() && token.length() > 1 && !STOPWORDS.contains(token)) {
+                list.add(token);
             }
-            ngrams.add(ngram.toString());
         }
-        
-        return ngrams;
+        return list;
     }
-    
-    public Set<String> searchNgram(String ngram) {
-        return ngramIndex.getOrDefault(ngram.toLowerCase(), Set.of());
-    }
+
+    // ... rest of the code ...
 }
 ```
+
+**Test:**
+```bash
+mvn clean spring-boot:run
+
+curl -X POST http://localhost:8082/api/v1/rag/compare \
+  -H "Content-Type: application/json" \
+  -d '{"query": "how to reset the password", "topK": 5}'
+```
+
+**Analysis:**
+
+1. **Do results improve?**
+   - Query reduces to ["reset", "password"] - more focused
+   - BM25 scores should be higher
+
+2. **Are there queries that get worse?**
+   - Yes: Queries where stopwords are meaningful (e.g., "in case of emergency")
+
+3. **Should you remove from query only, documents only, or both?**
+   - **Recommended**: Remove from **both** for consistent vocabulary space
 
 ---
 
 ## Chapter 4: Hybrid Search Service - Solutions
 
-### Exercise 1: Implement weighted hybrid search
+### Exercise 1: Analyze RRF Behavior
+
+**Task:** Submit a query and examine which documents appear in both vector and keyword results.
 
 **Solution:**
+
+```bash
+curl -X POST http://localhost:8082/api/v1/rag/compare \
+  -H "Content-Type: application/json" \
+  -d '{"query": "password reset VPN", "topK": 5}'
+```
+
+**Analysis:**
+
+1. **Which documents appear in all three result sets?**
+   - These are the most confident results
+
+2. **Do documents appearing in both lists rank higher?**
+   - Yes, by design. RRF sums contributions from both lists
+
+3. **Are there any surprises?**
+   - Look for documents that rank low in both but high in hybrid
+
+**Key insight:** RRF rewards consensus.
+
+---
+
+### Exercise 2: Tune the RRF Constant
+
+**Task:** Modify `RRF_RANK_CONSTANT` and observe the impact.
+
+**Solution:**
+
+Modify `HybridSearchService.java`:
 
 ```java
 @Service
 public class HybridSearchService {
-    
-    private final VectorSearchService vectorSearch;
-    private final KeywordSearchService keywordSearch;
-    
-    public List<SearchResult> hybridSearch(String query, 
-                                          double vectorWeight, 
-                                          double keywordWeight, 
-                                          int limit) {
-        var vectorResults = vectorSearch.search(query, limit * 2);
-        var keywordResults = keywordSearch.search(query, limit * 2);
-        
-        Map<String, Double> combinedScores = new HashMap<>();
-        
-        // Combine vector scores
-        for (var result : vectorResults) {
-            combinedScores.merge(result.documentId(), 
-                result.score() * vectorWeight, 
-                Double::sum);
-        }
-        
-        // Combine keyword scores
-        for (var result : keywordResults) {
-            combinedScores.merge(result.documentId(), 
-                result.score() * keywordWeight, 
-                Double::sum);
-        }
-        
-        return combinedScores.entrySet().stream()
-            .map(e -> new SearchResult(e.getKey(), e.getValue()))
-            .sorted(Comparator.comparingDouble(SearchResult::score).reversed())
-            .limit(limit)
-            .toList();
-    }
+    private static final int RRF_RANK_CONSTANT = 10;  // CHANGED: was 60
+    // ... rest of the code ...
 }
 ```
 
-### Exercise 2: Test hybrid search combinations
+**Analysis:**
+
+- Lower k (e.g., 10): Strongly favors top-ranked documents
+- Higher k (e.g., 100): More democratic—ranks 1-10 treated more equally
+- k=60 (standard): Balanced middle ground
+
+**Recommendation:** Stick with k=60 unless you have specific evaluation metrics.
+
+---
+
+### Exercise 3: Implement Weighted Hybrid Search
+
+**Task:** Extend the service to support weighted fusion.
 
 **Solution:**
 
-```java
-@Test
-void vectorOnlySearchShouldMatchVectorResults() {
-    var hybrid = hybridService.hybridSearch("test query", 1.0, 0.0, 5);
-    var vector = vectorService.search("test query", 5);
-    
-    assertThat(hybrid).hasSameSizeAs(vector);
-}
-
-@Test
-void keywordOnlySearchShouldMatchKeywordResults() {
-    var hybrid = hybridService.hybridSearch("test query", 0.0, 1.0, 5);
-    var keyword = keywordService.search("test query", 5);
-    
-    assertThat(hybrid).hasSameSizeAs(keyword);
-}
-
-@Test
-void balancedSearchShouldCombineResults() {
-    var hybrid = hybridService.hybridSearch("test query", 0.5, 0.5, 5);
-    
-    assertThat(hybrid).isNotEmpty();
-    assertThat(hybrid.size()).isLessThanOrEqualTo(5);
-}
-```
-
-### Exercise 3 (Bonus): Reciprocal Rank Fusion
-
-**Solution:**
+Add to `HybridSearchService.java`:
 
 ```java
-public List<SearchResult> reciprocalRankFusion(String query, int limit, int k) {
-    var vectorResults = vectorSearch.search(query, limit * 2);
-    var keywordResults = keywordSearch.search(query, limit * 2);
+public List<TextSegment> weightedHybridSearch(String query, int topK, double vectorWeight) {
+    int retrievalSize = topK * 2;
     
-    Map<String, Double> rrfScores = new HashMap<>();
+    List<TextSegment> vectorResults = vectorStore.searchSegments(query, retrievalSize);
+    List<TextSegment> keywordResults = keywordSearch.search(query, retrievalSize);
     
-    // Calculate RRF for vector results
-    for (int i = 0; i < vectorResults.size(); i++) {
-        String docId = vectorResults.get(i).documentId();
-        double score = 1.0 / (k + i + 1);
-        rrfScores.merge(docId, score, Double::sum);
-    }
-    
-    // Calculate RRF for keyword results
-    for (int i = 0; i < keywordResults.size(); i++) {
-        String docId = keywordResults.get(i).documentId();
-        double score = 1.0 / (k + i + 1);
-        rrfScores.merge(docId, score, Double::sum);
-    }
-    
-    return rrfScores.entrySet().stream()
-        .map(e -> new SearchResult(e.getKey(), e.getValue()))
-        .sorted(Comparator.comparingDouble(SearchResult::score).reversed())
-        .limit(limit)
-        .toList();
-}
-```
-
-### Exercise 4 (Challenge): Adaptive weighting
-
-**Solution:**
-
-```java
-public List<SearchResult> adaptiveHybridSearch(String query, int limit) {
-    double vectorWeight = calculateVectorWeight(query);
     double keywordWeight = 1.0 - vectorWeight;
     
-    return hybridSearch(query, vectorWeight, keywordWeight, limit);
-}
-
-private double calculateVectorWeight(String query) {
-    // Longer queries → favor vector search (semantic understanding)
-    // Shorter queries → favor keyword search (exact matching)
-    int wordCount = query.split("\\s+").length;
+    Map<String, Double> scores = new HashMap<>();
+    Map<String, TextSegment> segmentsByText = new HashMap<>();
     
-    if (wordCount <= 2) {
-        return 0.3; // 30% vector, 70% keyword
-    } else if (wordCount <= 5) {
-        return 0.5; // Balanced
-    } else {
-        return 0.7; // 70% vector, 30% keyword
+    // Vector contribution
+    for (int i = 0; i < vectorResults.size(); i++) {
+        TextSegment segment = vectorResults.get(i);
+        String text = segment.text();
+        double contribution = vectorWeight / (RRF_RANK_CONSTANT + i + 1);
+        scores.merge(text, contribution, Double::sum);
+        segmentsByText.putIfAbsent(text, segment);
     }
+    
+    // Keyword contribution
+    for (int i = 0; i < keywordResults.size(); i++) {
+        TextSegment segment = keywordResults.get(i);
+        String text = segment.text();
+        double contribution = keywordWeight / (RRF_RANK_CONSTANT + i + 1);
+        scores.merge(text, contribution, Double::sum);
+        segmentsByText.putIfAbsent(text, segment);
+    }
+    
+    List<TextSegment> mergedResults = scores.entrySet().stream()
+            .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+            .limit(retrievalSize)
+            .map(entry -> segmentsByText.get(entry.getKey()))
+            .filter(Objects::nonNull)
+            .toList();
+    
+    return reRanker.rerank(query, mergedResults, topK);
 }
 ```
+
+---
+
+### Exercise 4: Implement Parallel Retrieval
+
+**Task:** Implement parallel search using `CompletableFuture`.
+
+**Solution:**
+
+Add to `HybridSearchService.java`:
+
+```java
+public List<TextSegment> hybridSearchParallel(String query, int topK) {
+    int retrievalSize = topK * 2;
+
+    CompletableFuture<List<TextSegment>> vectorFuture =
+        CompletableFuture.supplyAsync(() -> vectorStore.searchSegments(query, retrievalSize));
+
+    CompletableFuture<List<TextSegment>> keywordFuture =
+        CompletableFuture.supplyAsync(() -> keywordSearch.search(query, retrievalSize));
+
+    CompletableFuture.allOf(vectorFuture, keywordFuture).join();
+
+    List<TextSegment> vectorResults = vectorFuture.join();
+    List<TextSegment> keywordResults = keywordFuture.join();
+
+    List<TextSegment> mergedResults = reciprocalRankFusion(vectorResults, keywordResults, retrievalSize);
+    return reRanker.rerank(query, mergedResults, topK);
+}
+```
+
+For this workshop corpus (~50 docs), sequential is sufficient. For large document stores, parallelize.
 
 ---
 
 ## Chapter 5: Re-Ranking - Solutions
 
-### Exercise 1: Implement cross-encoder re-ranking
+### Exercise 1: Measure Re-Ranking Impact
+
+**Task:** Compare results with and without re-ranking.
 
 **Solution:**
 
+Add to `HybridSearchService.java`:
+
 ```java
-@Service
-public class ReRankingService {
+public List<TextSegment> hybridSearchNoRerank(String query, int topK) {
+    int retrievalSize = topK * 2;
+
+    List<TextSegment> vectorResults = vectorStore.searchSegments(query, retrievalSize);
+    List<TextSegment> keywordResults = keywordSearch.search(query, retrievalSize);
+
+    List<TextSegment> mergedResults = reciprocalRankFusion(vectorResults, keywordResults, retrievalSize);
     
-    private final ChatLanguageModel chatModel;
-    
-    public List<SearchResult> rerank(String query, List<SearchResult> results, int limit) {
-        List<ScoredResult> reranked = results.stream()
-            .map(result -> {
-                double relevanceScore = calculateRelevance(query, result.text());
-                return new ScoredResult(result, relevanceScore);
-            })
-            .sorted(Comparator.comparingDouble(ScoredResult::score).reversed())
-            .limit(limit)
-            .map(ScoredResult::result)
+    return mergedResults.stream()
+            .limit(topK)
             .toList();
-        
-        return reranked;
+}
+```
+
+Test:
+```bash
+curl -X POST http://localhost:8082/api/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "password reset process", "useQueryExpansion": false}'
+```
+
+---
+
+### Exercise 2: Implement LLM-Based Re-Ranking
+
+**Task:** Use the LLM to score relevance.
+
+**Solution:**
+
+Create `LLMReRanker.java`:
+
+```java
+@Component("llmReRanker")
+public class LLMReRanker implements ReRanker {
+
+    private static final Logger log = LoggerFactory.getLogger(LLMReRanker.class);
+    private final ChatModel llm;
+
+    public LLMReRanker(ChatModel llm) {
+        this.llm = llm;
     }
-    
-    private double calculateRelevance(String query, String document) {
-        String prompt = String.format("""
-            Query: %s
-            Document: %s
-            
-            Rate the relevance of this document to the query on a scale of 0.0 to 1.0.
-            Return only the numeric score.
-            """, query, document);
-        
-        String response = chatModel.generate(prompt).trim();
+
+    @Override
+    public List<TextSegment> rerank(String query, List<TextSegment> candidates, int topK) {
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+
+        record ScoredCandidate(TextSegment segment, double score) {}
+
+        List<ScoredCandidate> scored = candidates.parallelStream()  // Parallel for speed
+                .map(candidate -> {
+                    double score = scoreRelevance(query, candidate.text());
+                    return new ScoredCandidate(candidate, score);
+                })
+                .sorted(Comparator.comparingDouble(ScoredCandidate::score).reversed())
+                .limit(topK)
+                .toList();
+
+        return scored.stream()
+                .map(ScoredCandidate::segment)
+                .toList();
+    }
+
+    private double scoreRelevance(String query, String document) {
+        String prompt = """
+                Rate the relevance of the following document to the query on a scale of 0.0 to 10.0.
+                
+                Query: %s
+                Document: %s
+                
+                Return ONLY a numeric score between 0.0 and 10.0.
+                Score:
+                """.formatted(query, document.substring(0, Math.min(500, document.length())));
         
         try {
-            return Double.parseDouble(response);
-        } catch (NumberFormatException e) {
+            String response = llm.chat(prompt).trim();
+            return Double.parseDouble(response.replaceAll("[^0-9.]", ""));
+        } catch (Exception e) {
+            log.warn("LLM scoring failed", e);
             return 0.0;
         }
     }
-    
-    record ScoredResult(SearchResult result, double score) {}
 }
 ```
 
-### Exercise 2: Test re-ranking improves results
+**Note:** LLM-based re-ranking is accurate but slow. For production, use a dedicated cross-encoder model.
+
+---
+
+### Exercise 3: Batch Re-Ranking
+
+**Task:** Optimize by batching embedding generation.
 
 **Solution:**
 
-```java
-@Test
-void rerankingShouldImproveTopResults() {
-    List<SearchResult> original = List.of(
-        new SearchResult("doc1", 0.8, "Irrelevant content"),
-        new SearchResult("doc2", 0.75, "Very relevant to query"),
-        new SearchResult("doc3", 0.7, "Somewhat relevant")
-    );
-    
-    List<SearchResult> reranked = reRankingService.rerank("specific query", original, 3);
-    
-    // Top result after re-ranking should be more relevant
-    assertThat(reranked.get(0).documentId()).isEqualTo("doc2");
-}
-```
-
-### Exercise 3 (Bonus): Diversity-aware re-ranking
-
-**Solution:**
+Modify `EmbeddingBasedReRanker.java`:
 
 ```java
-public List<SearchResult> diversityRerank(String query, 
-                                         List<SearchResult> results, 
-                                         int limit,
-                                         double diversityWeight) {
-    List<SearchResult> selected = new ArrayList<>();
-    List<SearchResult> candidates = new ArrayList<>(results);
-    
-    // Select first result (highest score)
-    if (!candidates.isEmpty()) {
-        selected.add(candidates.remove(0));
+@Override
+public List<TextSegment> rerank(String query, List<TextSegment> candidates, int topK) {
+    if (candidates.isEmpty()) {
+        return List.of();
     }
-    
-    // Select remaining results with diversity penalty
-    while (selected.size() < limit && !candidates.isEmpty()) {
-        SearchResult best = null;
-        double bestScore = Double.NEGATIVE_INFINITY;
-        int bestIndex = -1;
-        
-        for (int i = 0; i < candidates.size(); i++) {
-            SearchResult candidate = candidates.get(i);
-            double diversityPenalty = calculateDiversityPenalty(candidate, selected);
-            double adjustedScore = candidate.score() - (diversityWeight * diversityPenalty);
-            
-            if (adjustedScore > bestScore) {
-                bestScore = adjustedScore;
-                best = candidate;
-                bestIndex = i;
-            }
-        }
-        
-        if (best != null) {
-            selected.add(best);
-            candidates.remove(bestIndex);
-        }
-    }
-    
-    return selected;
-}
 
-private double calculateDiversityPenalty(SearchResult candidate, 
-                                        List<SearchResult> selected) {
-    return selected.stream()
-        .mapToDouble(s -> calculateSimilarity(candidate.text(), s.text()))
-        .average()
-        .orElse(0.0);
-}
-```
+    Embedding queryEmbedding = embeddingService.generateEmbedding(query);
 
-### Exercise 4 (Challenge): Learning-to-rank
-
-**Solution:**
-
-```java
-public class LearnToRankService {
-    
-    private final Map<String, Double> featureWeights = new HashMap<>();
-    
-    public List<SearchResult> rankWithFeatures(String query, List<SearchResult> results) {
-        return results.stream()
-            .map(result -> {
-                Map<String, Double> features = extractFeatures(query, result);
-                double score = calculateWeightedScore(features);
-                return new ScoredResult(result, score);
-            })
-            .sorted(Comparator.comparingDouble(ScoredResult::score).reversed())
-            .map(ScoredResult::result)
+    // Batch embed all candidates at once
+    List<String> candidateTexts = candidates.stream()
+            .map(TextSegment::text)
             .toList();
+
+    List<Embedding> candidateEmbeddings;
+    try {
+        candidateEmbeddings = embeddingService.generateEmbeddings(candidateTexts);
+    } catch (UnsupportedOperationException e) {
+        // Fallback to sequential
+        candidateEmbeddings = candidateTexts.stream()
+                .map(embeddingService::generateEmbedding)
+                .toList();
     }
-    
-    private Map<String, Double> extractFeatures(String query, SearchResult result) {
-        Map<String, Double> features = new HashMap<>();
-        
-        features.put("bm25_score", result.score());
-        features.put("query_length", (double) query.split("\\s+").length);
-        features.put("doc_length", (double) result.text().split("\\s+").length);
-        features.put("exact_match", query.toLowerCase().contains(result.text().toLowerCase()) ? 1.0 : 0.0);
-        features.put("term_overlap", calculateTermOverlap(query, result.text()));
-        
-        return features;
-    }
-    
-    private double calculateWeightedScore(Map<String, Double> features) {
-        return features.entrySet().stream()
-            .mapToDouble(e -> e.getValue() * featureWeights.getOrDefault(e.getKey(), 1.0))
-            .sum();
-    }
-    
-    private double calculateTermOverlap(String query, String text) {
-        Set<String> queryTerms = Set.of(query.toLowerCase().split("\\s+"));
-        Set<String> docTerms = Set.of(text.toLowerCase().split("\\s+"));
-        
-        long overlap = queryTerms.stream()
-            .filter(docTerms::contains)
-            .count();
-        
-        return (double) overlap / queryTerms.size();
-    }
+
+    record ScoredCandidate(TextSegment segment, double score) {}
+
+    return IntStream.range(0, candidates.size())
+            .mapToObj(i -> {
+                double score = similarityCalculator.cosineSimilarity(
+                        queryEmbedding.vector(),
+                        candidateEmbeddings.get(i).vector());
+                return new ScoredCandidate(candidates.get(i), score);
+            })
+            .sorted(Comparator.comparingDouble(ScoredCandidate::score).reversed())
+            .limit(topK)
+            .map(ScoredCandidate::segment)
+            .toList();
 }
 ```
+
+Batching provides ~3× speedup for re-ranking.
 
 ---
 
 ## Chapter 6: RAG Service - Solutions
 
-### Exercise 1: Build complete RAG pipeline
+### Exercise 1: Read the Pipeline Trace
+
+**Task:** Run a query and study the logs.
 
 **Solution:**
 
-```java
-@Service
-public class RagService {
-    
-    private final HybridSearchService searchService;
-    private final ReRankingService reRankingService;
-    private final ChatLanguageModel chatModel;
-    
-    public String answer(String question, int retrievalLimit) {
-        // 1. Retrieve relevant documents
-        var searchResults = searchService.hybridSearch(question, 0.6, 0.4, retrievalLimit);
-        
-        // 2. Re-rank results
-        var reranked = reRankingService.rerank(question, searchResults, 5);
-        
-        // 3. Build context from top results
-        String context = reranked.stream()
-            .map(SearchResult::text)
-            .collect(Collectors.joining("\n\n"));
-        
-        // 4. Generate answer
-        String prompt = String.format("""
-            Answer the question based on the context below.
-            
-            Context:
-            %s
-            
-            Question: %s
-            
-            Answer:
-            """, context, question);
-        
-        return chatModel.generate(prompt);
-    }
-}
+```bash
+curl -X POST http://localhost:8082/api/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How do I report a security incident?", "useQueryExpansion": true}'
 ```
 
-### Exercise 2: Test RAG pipeline
+**Look for:**
+- Stage 5 (LLM Generation) takes the longest (~60-80% of total time)
+- Stage 2 shows how many candidates (usually 25 = 5 searches × 5 results)
+- Stage 3 deduplicates (e.g., 25 → 8 unique segments)
+- Check `sources[].sourceQuery` to see if HyDE contributed unique chunks
+
+---
+
+### Exercise 2: Tune the Min Score Filter
+
+**Task:** Raise `MIN_FUSED_SCORE` and observe what gets dropped.
 
 **Solution:**
 
-```java
-@Test
-void ragShouldAnswerFromContext() {
-    String question = "How do I reset my password?";
-    String answer = ragService.answer(question, 10);
-    
-    assertThat(answer).isNotBlank();
-    assertThat(answer.toLowerCase()).contains("password");
-}
+Modify `RAGService.java`:
 
-@Test
-void ragShouldUseRetrievedContext() {
-    // Mock the search service to return specific documents
-    when(searchService.hybridSearch(anyString(), anyDouble(), anyDouble(), anyInt()))
-        .thenReturn(List.of(
-            new SearchResult("doc1", 0.9, "To reset your password, click the forgot password link")
-        ));
-    
-    String answer = ragService.answer("password reset", 10);
-    
-    assertThat(answer).contains("forgot password");
-}
+```java
+private static final double MIN_FUSED_SCORE = 0.016;  // CHANGED: was 0.0
 ```
 
-### Exercise 3 (Bonus): Multi-step reasoning
+Then in `fuseWithRrf`:
+
+```java
+return scoreByKey.entrySet().stream()
+        .filter(e -> e.getValue() >= MIN_FUSED_SCORE)  // ADDED
+        .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+        .limit(maxResults)
+        // ...
+```
+
+At 0.016:
+- Keeps rank 1-2 from expanded queries
+- Drops rank 3+
+- Filters HyDE-only chunks (weight=0.75)
+- Keeps multi-shard chunks
+
+**Recommendation:** 0.016-0.020 is optimal for this corpus.
+
+---
+
+### Exercise 3: Use the RagStatus Enum
+
+**Task:** Build a frontend that distinguishes the five status cases.
 
 **Solution:**
 
-```java
-public String answerWithReasoning(String question, int retrievalLimit) {
-    // Step 1: Decompose complex question
-    List<String> subQuestions = decomposeQuestion(question);
-    
-    // Step 2: Answer each sub-question
-    List<String> subAnswers = subQuestions.stream()
-        .map(q -> answer(q, retrievalLimit))
-        .toList();
-    
-    // Step 3: Synthesize final answer
-    String prompt = String.format("""
-        Original question: %s
-        
-        Sub-questions and answers:
-        %s
-        
-        Provide a comprehensive answer to the original question by synthesizing the sub-answers.
-        """, question, formatSubAnswers(subQuestions, subAnswers));
-    
-    return chatModel.generate(prompt);
-}
+React component example:
 
-private List<String> decomposeQuestion(String question) {
-    String prompt = String.format("""
-        Break down this complex question into simpler sub-questions:
-        %s
-        
-        Return one sub-question per line.
-        """, question);
-    
-    return Arrays.stream(chatModel.generate(prompt).split("\n"))
-        .map(String::trim)
-        .filter(s -> !s.isEmpty())
-        .toList();
-}
+```typescript
+const RagResponseDisplay: React.FC<{ response: RagAnswerResponse }> = ({ response }) => {
+  switch (response.status) {
+    case 'ANSWERED':
+      return <div>Show answer + sources</div>;
+    case 'INSUFFICIENT_CONTEXT':
+      return <div>⚠️ No relevant info found. Try rephrasing.</div>;
+    case 'RETRIEVAL_FAILED':
+      return <div>❌ Knowledge base unreachable. <button>Retry</button></div>;
+    case 'GENERATION_FAILED':
+      return <div>⚠️ Answer unavailable. Here are the sources we found: {sources}</div>;
+    case 'CANCELLED':
+      return <div>⏱️ Query timed out. <button>Retry</button></div>;
+  }
+};
 ```
 
-### Exercise 4 (Challenge): Citation generation
+**Key insight:** Status codes enable graceful degradation.
+
+---
+
+### Exercise 4: Trace a Chunk's Provenance
+
+**Task:** Inspect the `sourceQuery` field for a chunk.
 
 **Solution:**
 
-```java
-public record RagAnswer(String answer, List<Citation> citations) {}
+```bash
+curl -X POST http://localhost:8082/api/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "VPN access", "useQueryExpansion": true}' \
+  | jq '.sources[] | {number, title, sourceQuery}'
+```
 
-public record Citation(String text, String source, double relevanceScore) {}
-
-public RagAnswer answerWithCitations(String question, int retrievalLimit) {
-    var searchResults = searchService.hybridSearch(question, 0.6, 0.4, retrievalLimit);
-    var reranked = reRankingService.rerank(question, searchResults, 5);
-    
-    String context = buildContextWithMarkers(reranked);
-    
-    String prompt = String.format("""
-        Answer the question based on the numbered context passages below.
-        Include [1], [2], etc. to cite which passage supports each claim.
-        
-        %s
-        
-        Question: %s
-        
-        Answer (with citations):
-        """, context, question);
-    
-    String answer = chatModel.generate(prompt);
-    
-    List<Citation> citations = reranked.stream()
-        .map(r -> new Citation(r.text(), r.documentId(), r.score()))
-        .toList();
-    
-    return new RagAnswer(answer, citations);
-}
-
-private String buildContextWithMarkers(List<SearchResult> results) {
-    StringBuilder sb = new StringBuilder();
-    for (int i = 0; i < results.size(); i++) {
-        sb.append(String.format("[%d] %s\n\n", i + 1, results.get(i).text()));
-    }
-    return sb.toString();
+**Example output:**
+```json
+{
+  "number": 1,
+  "sourceQuery": "hybrid: VPN access | hybrid: How to access VPN | vector(HyDE): ..."
 }
 ```
+
+This shows the chunk was found by multiple shards—high confidence!
 
 ---
 
 ## Chapter 7: RAG Controller - Solutions
 
-### Exercise 1: Add error handling
+### Exercise 1: Add Request Logging
+
+**Task:** Log all incoming requests.
 
 **Solution:**
+
+Modify `RAGController.java`:
+
+```java
+@PostMapping("/query")
+public ResponseEntity<RAGResponse> query(@Valid @RequestBody RAGRequest request) {
+    log.info("Received RAG query: question='{}', expansion={}, length={}", 
+            request.question(), request.useQueryExpansion(), request.question().length());
+
+    long startTime = System.currentTimeMillis();
+    
+    RAGService.RagAnswer result = ragService.queryWithSources(
+            request.question(), request.useQueryExpansion());
+    
+    long elapsedTime = System.currentTimeMillis() - startTime;
+    
+    log.info("RAG query completed: status={}, answerLength={}, sources={}, elapsedMs={}", 
+            result.status(), result.answer().length(), result.sources().size(), elapsedTime);
+
+    return ResponseEntity.ok(new RAGResponse(
+            result.answer(), result.sources(), result.transformedQueries(),
+            result.elapsedMs(), result.status()));
+}
+```
+
+Analyze logs to find patterns in query expansion usage and status distribution.
+
+---
+
+### Exercise 2: Render Citation Sources
+
+**Task:** Build a client that maps `[Source N]` to the sources array.
+
+**Solution:**
+
+React component:
+
+```typescript
+const CitationRenderer: React.FC<{ answer: string; sources: Source[] }> = ({ answer, sources }) => {
+  const renderAnswerWithCitations = () => {
+    const parts = answer.split(/(\[Source \d+\])/g);
+    
+    return parts.map((part, index) => {
+      const match = part.match(/\[Source (\d+)\]/);
+      if (match) {
+        const sourceNum = parseInt(match[1]);
+        return (
+          <sup key={index}>
+            <a href={`#source-${sourceNum}`}>[{sourceNum}]</a>
+          </sup>
+        );
+      }
+      return <span key={index}>{part}</span>;
+    });
+  };
+
+  return (
+    <div>
+      <div className="answer">{renderAnswerWithCitations()}</div>
+      <div className="sources">
+        {sources.map(s => (
+          <div key={s.number} id={`source-${s.number}`}>
+            <strong>[{s.number}]</strong> {s.title}
+            <p>{s.text}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+```
+
+---
+
+### Exercise 3: Implement Pagination for Compare
+
+**Task:** Allow different pages of results.
+
+**Solution:**
+
+Update `CompareRequest`:
+
+```java
+record CompareRequest(
+    @NotBlank String query,
+    @Min(1) @Max(20) int topK,
+    @Min(0) int offset
+) {
+    CompareRequest {
+        topK = (topK == 0) ? 5 : topK;
+        offset = Math.max(0, offset);
+    }
+}
+```
+
+Add offset support to search methods:
+
+```java
+public List<TextSegment> vectorOnlySearch(String query, int topK, int offset) {
+    return vectorStore.searchSegments(query, topK + offset)
+            .stream()
+            .skip(offset)
+            .limit(topK)
+            .toList();
+}
+```
+
+Test:
+```bash
+# Page 1
+curl -X POST http://localhost:8082/api/v1/rag/compare \
+  -d '{"query": "VPN", "topK": 5, "offset": 0}'
+
+# Page 2
+curl -X POST http://localhost:8082/api/v1/rag/compare \
+  -d '{"query": "VPN", "topK": 5, "offset": 5}'
+```
+
+---
+
+### Exercise 4: Add Health Check Endpoint
+
+**Task:** Expose a health check.
+
+**Solution:**
+
+Create `HealthCheckController.java`:
 
 ```java
 @RestController
-@RequestMapping("/api/v1/rag")
-public class RagController {
-    
-    private final RagService ragService;
-    
-    @PostMapping("/ask")
-    public ResponseEntity<RagResponse> ask(@RequestBody @Valid RagRequest request) {
+@RequestMapping("/api/v1/health")
+public class HealthCheckController {
+
+    private final VectorStoreService vectorStore;
+    private final ChatModel llm;
+
+    @GetMapping
+    public ResponseEntity<Map<String, Object>> health() {
+        Map<String, Object> health = new HashMap<>();
+        
+        boolean vectorStoreHealthy = checkVectorStore();
+        boolean llmHealthy = checkLLM();
+        
+        health.put("vectorStore", vectorStoreHealthy ? "UP" : "DOWN");
+        health.put("llm", llmHealthy ? "UP" : "DOWN");
+        health.put("status", (vectorStoreHealthy && llmHealthy) ? "UP" : "DEGRADED");
+        
+        return ResponseEntity.ok(health);
+    }
+
+    @GetMapping("/ready")
+    public ResponseEntity<Map<String, String>> readiness() {
+        boolean ready = checkVectorStore() && checkLLM();
+        return ready ? 
+                ResponseEntity.ok(Map.of("status", "READY")) :
+                ResponseEntity.status(503).body(Map.of("status", "NOT_READY"));
+    }
+
+    private boolean checkVectorStore() {
         try {
-            String answer = ragService.answer(request.question(), request.limit());
-            return ResponseEntity.ok(new RagResponse(answer, "Success", null));
+            return vectorStore.getAllSegments(ChunkingStrategy.RECURSIVE) != null;
         } catch (Exception e) {
-            logger.error("Error processing RAG request", e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(new RagResponse(null, "Error", e.getMessage()));
+            return false;
         }
     }
-    
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<RagResponse> handleValidationError(IllegalArgumentException e) {
-        return ResponseEntity.badRequest()
-            .body(new RagResponse(null, "Validation Error", e.getMessage()));
-    }
-}
-```
 
-### Exercise 2: Test error scenarios
-
-**Solution:**
-
-```java
-@Test
-void shouldHandleEmptyQuestion() throws Exception {
-    mockMvc.perform(post("/api/v1/rag/ask")
-        .contentType(MediaType.APPLICATION_JSON)
-        .content("""
-            {
-                "question": "",
-                "limit": 5
-            }
-            """))
-        .andExpect(status().isBadRequest());
-}
-
-@Test
-void shouldHandleServiceException() throws Exception {
-    when(ragService.answer(anyString(), anyInt()))
-        .thenThrow(new RuntimeException("Service error"));
-    
-    mockMvc.perform(post("/api/v1/rag/ask")
-        .contentType(MediaType.APPLICATION_JSON)
-        .content("""
-            {
-                "question": "test",
-                "limit": 5
-            }
-            """))
-        .andExpect(status().isInternalServerError());
-}
-```
-
-### Exercise 3 (Bonus): Streaming responses
-
-**Solution:**
-
-```java
-@GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-public Flux<String> streamAnswer(@RequestParam String question,
-                                 @RequestParam(defaultValue = "10") int limit) {
-    return Flux.create(sink -> {
-        try {
-            String answer = ragService.answer(question, limit);
-            
-            // Stream answer word by word
-            String[] words = answer.split("\\s+");
-            for (String word : words) {
-                sink.next(word + " ");
-                Thread.sleep(100); // Simulate streaming delay
-            }
-            
-            sink.complete();
-        } catch (Exception e) {
-            sink.error(e);
-        }
-    });
-}
-```
-
-### Exercise 4 (Challenge): Request metrics
-
-**Solution:**
-
-```java
-@Component
-public class RagMetricsInterceptor implements HandlerInterceptor {
-    
-    private final MeterRegistry meterRegistry;
-    
-    @Override
-    public boolean preHandle(HttpServletRequest request, 
-                            HttpServletResponse response, 
-                            Object handler) {
-        request.setAttribute("startTime", System.currentTimeMillis());
-        return true;
-    }
-    
-    @Override
-    public void afterCompletion(HttpServletRequest request, 
-                               HttpServletResponse response, 
-                               Object handler, 
-                               Exception ex) {
-        long startTime = (long) request.getAttribute("startTime");
-        long duration = System.currentTimeMillis() - startTime;
-        
-        meterRegistry.timer("rag.request.duration",
-            "method", request.getMethod(),
-            "status", String.valueOf(response.getStatus()))
-            .record(duration, TimeUnit.MILLISECONDS);
-        
-        meterRegistry.counter("rag.request.total",
-            "status", String.valueOf(response.getStatus()))
-            .increment();
+    private boolean checkLLM() {
+        return llm != null;
     }
 }
 ```
@@ -967,117 +963,179 @@ public class RagMetricsInterceptor implements HandlerInterceptor {
 
 ## Chapter 8: Structured Concurrency - Solutions
 
-### Exercise 1: Parallel retrieval with StructuredTaskScope
+### Exercise 1: Measure Parallel Speedup
+
+**Task:** Compare sequential vs. parallel timing.
+
+**Solution:**
+
+Add benchmark endpoint:
+
+```java
+@GetMapping("/benchmark-concurrency")
+public ResponseEntity<Map<String, Object>> benchmarkConcurrency(
+        @RequestParam String query, @RequestParam(defaultValue = "5") int topK) {
+    
+    // Sequential
+    long seqStart = System.currentTimeMillis();
+    vectorSearch(query, topK);
+    keywordSearch(query, topK);
+    hybridSearch(query, topK);
+    long seqMs = System.currentTimeMillis() - seqStart;
+
+    // Parallel
+    long parStart = System.currentTimeMillis();
+    try (var scope = StructuredTaskScope.open(Joiner.allSuccessfulOrThrow())) {
+        scope.fork(() -> vectorSearch(query, topK));
+        scope.fork(() -> keywordSearch(query, topK));
+        scope.fork(() -> hybridSearch(query, topK));
+        scope.join();
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+    }
+    long parMs = System.currentTimeMillis() - parStart;
+
+    return ResponseEntity.ok(Map.of(
+        "sequentialMs", seqMs,
+        "parallelMs", parMs,
+        "speedup", String.format("%.2fx", (double) seqMs / parMs)
+    ));
+}
+```
+
+Expect **1.5-2.5× speedup** for small corpus.
+
+---
+
+### Exercise 2: Simulate Task Failure
+
+**Task:** Observe automatic cancellation.
 
 **Solution:**
 
 ```java
-public List<SearchResult> parallelSearch(String query, int limit) throws Exception {
-    try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+@GetMapping("/test-failure")
+public ResponseEntity<Map<String, String>> testFailure() {
+    try (var scope = StructuredTaskScope.open(Joiner.allSuccessfulOrThrow())) {
         
-        // Launch parallel searches
-        var vectorFuture = scope.fork(() -> vectorSearch.search(query, limit));
-        var keywordFuture = scope.fork(() -> keywordSearch.search(query, limit));
+        scope.fork(() -> {
+            Thread.sleep(500);
+            throw new RuntimeException("Failed!");
+        });
         
-        // Wait for all to complete
+        scope.fork(() -> {
+            Thread.sleep(3000);  // Won't complete
+            return "Done";
+        });
+        
         scope.join();
-        scope.throwIfFailed();
+        return ResponseEntity.ok(Map.of("status", "SUCCESS"));
         
-        // Combine results
-        var vectorResults = vectorFuture.resultNow();
-        var keywordResults = keywordFuture.resultNow();
-        
-        return mergeResults(vectorResults, keywordResults, limit);
+    } catch (Exception e) {
+        return ResponseEntity.status(500).body(Map.of(
+            "status", "ERROR",
+            "message": e.getMessage()
+        ));
     }
 }
 ```
 
-### Exercise 2: Test parallel execution
+The 3-second task is **cancelled** when the first task fails at 500ms.
+
+---
+
+### Exercise 3: Implement Timeout
+
+**Task:** Use `joinUntil` for deadline.
 
 **Solution:**
 
 ```java
-@Test
-void parallelSearchShouldBeFaster() {
-    long sequentialStart = System.currentTimeMillis();
-    var seq1 = vectorSearch.search("query", 10);
-    var seq2 = keywordSearch.search("query", 10);
-    long sequentialDuration = System.currentTimeMillis() - sequentialStart;
+@PostMapping("/compare-with-timeout")
+public ResponseEntity<Map<String, Object>> compareWithTimeout(
+        @RequestBody CompareRequest request,
+        @RequestParam(defaultValue = "5000") long timeoutMs) {
     
-    long parallelStart = System.currentTimeMillis();
-    var parallelResults = searchService.parallelSearch("query", 10);
-    long parallelDuration = System.currentTimeMillis() - parallelStart;
+    Instant deadline = Instant.now().plusMillis(timeoutMs);
     
-    assertThat(parallelDuration).isLessThan(sequentialDuration);
-}
-```
+    try (var scope = StructuredTaskScope.open(Joiner.allSuccessfulOrThrow())) {
+        var v = scope.fork(() -> vectorSearch(request.query(), request.topK()));
+        var k = scope.fork(() -> keywordSearch(request.query(), request.topK()));
+        var h = scope.fork(() -> hybridSearch(request.query(), request.topK()));
 
-### Exercise 3 (Bonus): Timeout handling
+        scope.joinUntil(deadline);
 
-**Solution:**
+        return ResponseEntity.ok(Map.of(
+            "vectorResults", v.get(),
+            "keywordResults", k.get(),
+            "hybridResults", h.get()
+        ));
 
-```java
-public List<SearchResult> searchWithTimeout(String query, 
-                                           int limit, 
-                                           Duration timeout) throws Exception {
-    try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
-        
-        var vectorFuture = scope.fork(() -> vectorSearch.search(query, limit));
-        var keywordFuture = scope.fork(() -> keywordSearch.search(query, limit));
-        
-        scope.joinUntil(Instant.now().plus(timeout));
-        scope.throwIfFailed();
-        
-        return mergeResults(
-            vectorFuture.resultNow(), 
-            keywordFuture.resultNow(), 
-            limit
-        );
     } catch (TimeoutException e) {
-        logger.warn("Search timed out after {}", timeout);
-        throw new SearchTimeoutException("Search exceeded timeout: " + timeout);
+        return ResponseEntity.status(504).body(Map.of(
+            "status", "TIMEOUT",
+            "message", "Exceeded " + timeoutMs + "ms"
+        ));
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return ResponseEntity.status(500).body(Map.of("status", "INTERRUPTED"));
     }
 }
 ```
 
-### Exercise 4 (Challenge): Result aggregation
+---
+
+### Exercise 4: "First Successful Result" Pattern
+
+**Task:** Return fastest search result.
 
 **Solution:**
 
 ```java
-public class AggregatingScope<T> extends StructuredTaskScope<T> {
+@PostMapping("/search-fastest")
+public ResponseEntity<Map<String, Object>> searchFastest(
+        @RequestParam String query, @RequestParam(defaultValue = "5") int topK) {
     
-    private final List<T> results = Collections.synchronizedList(new ArrayList<>());
+    record Result(String method, List<String> results, long durationMs) {}
     
-    @Override
-    protected void handleComplete(Subtask<? extends T> subtask) {
-        if (subtask.state() == Subtask.State.SUCCESS) {
-            results.add(subtask.get());
-        }
-    }
-    
-    public List<T> getResults() {
-        return new ArrayList<>(results);
-    }
-}
+    try (var scope = StructuredTaskScope.open(Joiner.anySuccessfulResultOrThrow())) {
+        
+        scope.fork(() -> {
+            long start = System.currentTimeMillis();
+            var res = vectorSearch(query, topK);
+            return new Result("vector", res, System.currentTimeMillis() - start);
+        });
+        
+        scope.fork(() -> {
+            long start = System.currentTimeMillis();
+            var res = keywordSearch(query, topK);
+            return new Result("keyword", res, System.currentTimeMillis() - start);
+        });
+        
+        scope.fork(() -> {
+            long start = System.currentTimeMillis();
+            var res = hybridSearch(query, topK);
+            return new Result("hybrid", res, System.currentTimeMillis() - start);
+        });
 
-public List<SearchResult> aggregateMultipleSearches(List<String> queries) throws Exception {
-    try (var scope = new AggregatingScope<List<SearchResult>>()) {
-        
-        for (String query : queries) {
-            scope.fork(() -> vectorSearch.search(query, 10));
-        }
-        
         scope.join();
         
-        return scope.getResults().stream()
-            .flatMap(List::stream)
-            .distinct()
-            .sorted(Comparator.comparingDouble(SearchResult::score).reversed())
-            .toList();
+        Result winner = scope.result();
+        
+        return ResponseEntity.ok(Map.of(
+            "winner", winner.method,
+            "results", winner.results,
+            "durationMs", winner.durationMs
+        ));
+
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException("Interrupted", e);
     }
 }
 ```
+
+Typically saves **60-70% latency** compared to waiting for all three.
 
 ---
 

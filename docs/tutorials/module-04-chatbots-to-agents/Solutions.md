@@ -7,7 +7,8 @@ This document contains solutions to all practice exercises in Module 04: From Ch
 ### Prerequisites
 - Java 21+ (for Virtual Threads)
 - Maven 3.9+
-- Ollama with llama3.2 model
+- OpenAI API key (or compatible API)
+- Docker & Docker Compose
 - Understanding of the ReAct pattern
 
 ### Project Location
@@ -17,14 +18,19 @@ cd src/module-04-chatbots-to-agents/
 
 ### Setup
 ```bash
-# Ensure Ollama is running
-ollama serve
+# 1. Set environment variables
+export OPENAI_API_KEY=your-api-key-here
+export OPENAI_MODEL_NAME=gpt-4o-mini
 
-# Pull the model
-ollama pull llama3.2
+# 2. Start infrastructure services
+docker compose up -d
 
-# Verify
-ollama list
+# This starts:
+# - PostgreSQL (port 5432) - for agent tools
+# - Redis (port 6379) - for conversation memory
+
+# 3. Verify services
+docker ps
 ```
 
 ### Running the Application
@@ -126,10 +132,11 @@ curl -X POST http://localhost:8080/api/v1/agent/complex \
 ```
 
 ### Troubleshooting
+- **API key errors**: Verify `OPENAI_API_KEY` is set correctly
 - **Agent loops forever**: Check maxIterations setting, verify action detection
 - **Wrong tool selected**: Improve tool descriptions or add examples
 - **Memory fills up**: Implement sliding window or summarization
-- **Slow responses**: First LLM call loads model, subsequent calls faster
+- **Redis connection fails**: Ensure `docker compose up -d` is running
 
 ### Advanced: Custom Agents
 To create your own specialized agent:

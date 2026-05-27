@@ -49,7 +49,7 @@ Before proceeding, verify you have:
    # Should show: Apache Maven 3.6.x or higher
    ```
 
-3. **OpenAI API Key** (or compatible endpoint):
+3. **OpenAI API Key** (or use a compatible endpoint):
    - Create an account at [platform.openai.com](https://platform.openai.com)
    - Generate an API key from the dashboard
    - Set it as an environment variable (we'll do this next)
@@ -97,7 +97,14 @@ server:
 langchain4j:
   open-ai:
     api-key: ${OPENAI_API_KEY:demo}
-    model-name: ${OPENAI_MODEL:gpt-4o-mini}
+    model-name:  ${OPENAI_MODEL_NAME:gpt-4}
+    api-base: ${OPENAI_API_BASE:https://api.openai.com/}
+
+# export OPENAI_API_KEY sk-***
+# export OPENAI_MODEL_NAME qwen3-14b
+# export OPENAI_API_BASE https://litellm-prod.apps.maas.redhatworkshops.io/v1
+
+
 ```
 
 **Configuration breakdown:**
@@ -105,7 +112,7 @@ langchain4j:
 - **`api-key: ${OPENAI_API_KEY:demo}`** - Reads from environment variable, defaults to "demo" (which won't work)
 - **`model-name: ${OPENAI_MODEL:gpt-4o-mini}`** - Uses GPT-4o-mini by default; override with `OPENAI_MODEL` env var
 
-> **Why GPT-4o-mini?** It's the workshop's default across all modules — cheap, fast, and capable enough for query transformation, tool use, and answer generation. For higher-stakes generation (Module 05's primary model, Module 06's evaluation judge), the workshop steps up to `gpt-4o`.
+> **Why qwen-14b?** It's the workshop's default across all modules — cheap, fast, and capable enough for query transformation, tool use, and answer generation.
 
 ## Building the Project
 

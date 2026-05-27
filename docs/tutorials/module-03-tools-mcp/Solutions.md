@@ -7,44 +7,52 @@ This document contains solutions to all practice exercises in Module 03: Tools a
 ### Prerequisites
 - Java 21+
 - Maven 3.9+
-- PostgreSQL database (for database tools)
-- Weather API key (for weather tool exercises)
+- OpenAI API key (or compatible API)
+- Docker & Docker Compose
+- Weather API key (optional - for weather tool exercises)
 
 ### Project Location
 ```bash
 cd src/module-03-tools-mcp/
 ```
 
-### Database Setup
+### Setup
 ```bash
-# Start PostgreSQL with Docker
-docker run --name postgres-mcp \
-  -e POSTGRES_PASSWORD=password \
-  -e POSTGRES_DB=toolsdb \
-  -p 5432:5432 \
-  -d postgres:15
+# 1. Set environment variables
+export OPENAI_API_KEY=your-api-key-here
+export OPENAI_MODEL_NAME=gpt-4o-mini
 
-# Create test table
-docker exec -it postgres-mcp psql -U postgres -d toolsdb -c \
-  "CREATE TABLE users (id SERIAL PRIMARY KEY, name VARCHAR(100), email VARCHAR(100));"
+# 2. Start all infrastructure services
+docker compose up -d
 
-# Insert test data
-docker exec -it postgres-mcp psql -U postgres -d toolsdb -c \
-  "INSERT INTO users (name, email) VALUES ('John Doe', 'john@example.com');"
+# This starts:
+# - PostgreSQL (port 5432) - for database tools
+# - Redis (port 6379) - for caching
+
+# 3. Verify services
+docker ps
+```
+
+### Database Schema Setup
+The database tables are automatically created on startup. To verify:
+```bash
+docker exec -it postgres psql -U postgres -d toolsdb -c "SELECT * FROM customers LIMIT 5;"
 ```
 
 ### Configuration
-Update `src/main/resources/application.yml`:
+The application reads from environment variables:
 ```yaml
+# application.yml
+langchain4j:
+  open-ai:
+    api-key: ${OPENAI_API_KEY:demo}
+    model-name: ${OPENAI_MODEL_NAME:gpt-4}
+    
 spring:
   datasource:
     url: jdbc:postgresql://localhost:5432/toolsdb
     username: postgres
-    password: password
-
-weather:
-  api:
-    key: YOUR_API_KEY_HERE  # Get from openweathermap.org
+    password: postgres
 ```
 
 ### Running the Application

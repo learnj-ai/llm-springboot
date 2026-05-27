@@ -7,6 +7,7 @@ This document contains solutions to all practice exercises in Module 06: Enterpr
 ### Prerequisites
 - Java 21+
 - Maven 3.9+
+- OpenAI API key (or compatible API)
 - Docker & Docker Compose (for observability stack)
 - Kubernetes cluster (for deployment exercises) - Minikube or kind for local testing
 
@@ -15,28 +16,25 @@ This document contains solutions to all practice exercises in Module 06: Enterpr
 cd src/module-06-enterprise-production/
 ```
 
-### Setup Observability Stack
+### Setup
 ```bash
-# Start Jaeger (distributed tracing)
-docker run -d --name jaeger \
-  -p 16686:16686 \
-  -p 4317:4317 \
-  -p 4318:4318 \
-  jaegertracing/all-in-one:latest
+# 1. Set environment variables
+export OPENAI_API_KEY=your-api-key-here
+export OPENAI_MODEL_NAME=gpt-4o-mini
 
-# Start Prometheus (metrics)
-docker run -d --name prometheus \
-  -p 9090:9090 \
-  -v $(pwd)/config/prometheus.yml:/etc/prometheus/prometheus.yml \
-  prom/prometheus
+# 2. Start all infrastructure services (includes observability stack)
+docker compose up -d
 
-# Start Grafana (visualization)
-docker run -d --name grafana \
-  -p 3000:3000 \
-  grafana/grafana
+# This starts:
+# - Redis (port 6379) - for caching
+# - Prometheus (port 9090) - for metrics
+# - Grafana (port 3000) - for dashboards
+# - Jaeger (port 16686) - for distributed tracing
 
-# Or use Docker Compose
-docker-compose up -d
+# 3. Verify all services are running
+docker ps
+curl http://localhost:9090/-/healthy    # Prometheus
+curl http://localhost:16686/            # Jaeger UI
 ```
 
 ### Configuration
@@ -264,11 +262,12 @@ curl -X POST http://localhost:8080/api/v1/eval/compare-baseline \
 ```
 
 ### Troubleshooting
+- **API key errors**: Verify `OPENAI_API_KEY` is set correctly
 - **No traces in Jaeger**: Check `management.tracing.enabled=true` in config
 - **Metrics not exported**: Verify Prometheus scrapes `actuator/prometheus` endpoint
-- **Cache not working**: Check Caffeine is in classpath, cache configuration is loaded
-- **Evaluation fails**: Ensure test dataset exists, judge model is running
-- **K8s pods crash**: Check logs with `kubectl logs`, verify resource limits
+- **Cache not working**: Check Redis connection, verify cache configuration is loaded
+- **Evaluation fails**: Ensure test dataset exists and API is accessible
+- **K8s pods crash**: Check logs with `kubectl logs`, verify resource limits and environment variables
 
 ### Production Checklist
 - [ ] Distributed tracing configured and validated
