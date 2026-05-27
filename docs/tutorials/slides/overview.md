@@ -13,7 +13,8 @@
 ## Workshop Authors
 
 ### Bazlur Rahman
-        Java Champion, Author, ...
+        Java Champion, Author, Sr. Staff Software Engineer
+        Hammerspace
 
 ### Shaaf Syed
         Java, Architect, ML, Technical Editor, Open source Evangelist  
