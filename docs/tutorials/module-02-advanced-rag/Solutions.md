@@ -7,24 +7,31 @@ This document contains solutions to all practice exercises in Module 02: Advance
 ### Prerequisites
 - Java 21 or later (required for Virtual Threads and Structured Concurrency)
 - Maven 3.9+
-- Ollama installed and running locally (for LLM integration)
+- OpenAI API key (or compatible API like Azure OpenAI)
+- Docker & Docker Compose (for infrastructure services)
 
 ### Project Location
 ```bash
 cd src/module-02-advanced-rag/
 ```
 
-### Setup Ollama
+### Setup API Keys and Infrastructure
 ```bash
-# Install Ollama (if not already installed)
-# macOS/Linux: curl https://ollama.ai/install.sh | sh
+# 1. Set environment variables for OpenAI API
+export OPENAI_API_KEY=your-api-key-here
+export OPENAI_MODEL_NAME=gpt-4o-mini
+# export OPENAI_API_BASE=https://api.openai.com/  # Optional: for custom endpoints
 
-# Pull required models
-ollama pull llama3.2
-ollama pull nomic-embed-text
+# 2. Start infrastructure services
+docker compose up -d
 
-# Verify Ollama is running
-curl http://localhost:11434/api/tags
+# This starts:
+# - ChromaDB (port 8000) - vector database
+# - Redis (port 6379) - caching
+
+# Verify services are running
+docker ps
+curl http://localhost:8000/api/v1/heartbeat  # ChromaDB health check
 ```
 
 ### Running the Application
@@ -87,9 +94,10 @@ curl -X POST http://localhost:8080/api/v1/search/hybrid \
 4. **Check answer quality**: RAG responses should be grounded in retrieved context
 
 ### Troubleshooting
-- **Ollama connection fails**: Ensure Ollama is running (`ollama serve`)
+- **API key errors**: Verify `OPENAI_API_KEY` is set correctly
 - **No results returned**: Check that documents are loaded at startup
-- **Slow responses**: Normal for first request (model loading), subsequent requests faster
+- **Slow responses**: First API call may be slower; subsequent requests use caching
+- **ChromaDB connection fails**: Ensure `docker compose up -d` is running
 
 ---
 
